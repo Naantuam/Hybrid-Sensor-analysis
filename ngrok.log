@@ -1,0 +1,13 @@
+t=2026-06-05T10:57:34+0100 lvl=info msg="no configuration paths supplied"
+t=2026-06-05T10:57:34+0100 lvl=info msg="using configuration at default config path" path=/home/naantuam/.config/ngrok/ngrok.yml
+t=2026-06-05T10:57:34+0100 lvl=info msg="open config file" path=/home/naantuam/.config/ngrok/ngrok.yml err=nil
+t=2026-06-05T10:57:34+0100 lvl=info msg="FIPS 140 mode" enabled=false
+t=2026-06-05T10:57:34+0100 lvl=info msg="starting web service" obj=web addr=127.0.0.1:4040 allow_hosts=[]
+t=2026-06-05T10:57:36+0100 lvl=info msg="update available" obj=updater
+t=2026-06-05T10:57:37+0100 lvl=info msg="client session established" obj=tunnels.session
+t=2026-06-05T10:57:37+0100 lvl=info msg="tunnel session started" obj=tunnels.session
+t=2026-06-05T10:57:38+0100 lvl=info msg="started tunnel" obj=tunnels name=command_line addr=http://localhost:4444 url=https://cheer-papaya-viability.ngrok-free.dev
+t=2026-06-05T11:02:42+0100 lvl=eror msg="heartbeat timeout, terminating session" obj=tunnels.session obj=csess id=f2097f7c3428 clientid=eec37b675c5c048343c653afba4d8a8a
+t=2026-06-05T11:02:42+0100 lvl=eror msg="session closed, starting reconnect loop" obj=tunnels.session obj=csess id=04c36249f9c8 err="session closed"
+t=2026-06-05T11:02:56+0100 lvl=info msg="client session established" obj=tunnels.session
+t=2026-06-05T11:02:56+0100 lvl=info msg="tunnel session started" obj=tunnels.session
