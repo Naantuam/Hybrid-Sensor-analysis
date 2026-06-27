@@ -3,7 +3,7 @@ const { exec } = require('child_process');
 
 // Dynamic configuration parameters (to be fetched or fallback)
 const LOCAL_URL = process.argv[2] || "ws://edge-monitor.local:4444";
-const CLOUD_URL = process.argv[3] || "wss://your-railway-app.railway.app"; // Set by user during railway setup
+const CLOUD_URL = process.argv[3] || process.argv[2] || "wss://your-railway-app.railway.app"; // Set by user during railway setup
 
 let activeUrl = LOCAL_URL;
 let ws = null;
@@ -144,22 +144,90 @@ function startBatteryMonitoring() {
 }
 
 /**
- * Periodically audits active sensor-using applications
+ * Executes a child process command and returns a Promise
+ */
+function execPromise(command) {
+    return new Promise((resolve) => {
+        exec(command, (err, stdout) => {
+            resolve({ err, stdout });
+        });
+    });
+}
+
+/**
+ * Periodically audits active sensor-using applications (SensorManager & AppOps)
  */
 function startTelemetryLoop() {
     if (batterySaverActive) return;
     
     clearInterval(telemetryInterval);
-    telemetryInterval = setInterval(() => {
-        // Runs dumpsys to find applications listening to sensors
-        exec('adb shell dumpsys sensorservice', (err, stdout) => {
+    telemetryInterval = setInterval(async () => {
+        try {
+            // Run dumpsys, AppOps, and settings queries concurrently
+            const [
+                sensorRes, micRes, camRes, 
+                fineLocRes, coarseLocRes, bleRes, 
+                bioRes, accessRes
+            ] = await Promise.all([
+                execPromise('adb shell dumpsys sensorservice'),
+                execPromise('adb shell appops query-op android:record_audio active'),
+                execPromise('adb shell appops query-op android:camera active'),
+                execPromise('adb shell appops query-op android:fine_location active'),
+                execPromise('adb shell appops query-op android:coarse_location active'),
+                execPromise('adb shell appops query-op android:bluetooth_scan active'),
+                execPromise('adb shell appops query-op android:use_biometric active'),
+                execPromise('adb shell settings get secure enabled_accessibility_services')
+            ]);
+
             let activeAppPackages = [];
 
-            if (err || !stdout) {
-                // Fallback to local simulated/mock sensor app detection if ADB is not paired
+            // 1. Parse SensorManager physical sensors
+            if (!sensorRes.err && sensorRes.stdout) {
+                activeAppPackages = activeAppPackages.concat(parseSensorServiceOutput(sensorRes.stdout));
+            }
+
+            // 2. Parse Microphone recording status
+            if (!micRes.err && micRes.stdout) {
+                activeAppPackages = activeAppPackages.concat(parseAppOpsOutput(micRes.stdout, "Microphone"));
+            }
+
+            // 3. Parse Camera status
+            if (!camRes.err && camRes.stdout) {
+                activeAppPackages = activeAppPackages.concat(parseAppOpsOutput(camRes.stdout, "Camera"));
+            }
+
+            // 4. Parse Location status (GPS & Network)
+            if (!fineLocRes.err && fineLocRes.stdout) {
+                activeAppPackages = activeAppPackages.concat(parseAppOpsOutput(fineLocRes.stdout, "GPS_Location"));
+            }
+            if (!coarseLocRes.err && coarseLocRes.stdout) {
+                activeAppPackages = activeAppPackages.concat(parseAppOpsOutput(coarseLocRes.stdout, "Network_Location"));
+            }
+
+            // 5. Parse Bluetooth scanning
+            if (!bleRes.err && bleRes.stdout) {
+                activeAppPackages = activeAppPackages.concat(parseAppOpsOutput(bleRes.stdout, "Bluetooth_Scan"));
+            }
+
+            // 6. Parse Biometric use
+            if (!bioRes.err && bioRes.stdout) {
+                activeAppPackages = activeAppPackages.concat(parseAppOpsOutput(bioRes.stdout, "Biometric_Auth"));
+            }
+
+            // 7. Parse enabled Accessibility Services
+            let accessibilityPackages = [];
+            if (!accessRes.err && accessRes.stdout && accessRes.stdout.trim() !== "null" && accessRes.stdout.trim() !== "") {
+                const services = accessRes.stdout.trim().split(':');
+                services.forEach(service => {
+                    const pkg = service.split('/')[0];
+                    if (pkg) accessibilityPackages.push(pkg);
+                });
+            }
+
+            // Fallback to mock data if ALL queries failed (indicates phone is not paired/connected)
+            const allQueriesFailed = sensorRes.err && micRes.err && camRes.err && fineLocRes.err && coarseLocRes.err && bleRes.err && bioRes.err;
+            if (allQueriesFailed) {
                 activeAppPackages = getMockActiveAppSensorData();
-            } else {
-                activeAppPackages = parseSensorServiceOutput(stdout);
             }
 
             activeAppPackages.forEach((appEvent) => {
@@ -177,7 +245,8 @@ function startTelemetryLoop() {
                             polling_rate_hz: appEvent.rate,
                             metadata: {
                                 screen_state: appEvent.screenOff ? "OFF" : "ON",
-                                has_foreground_service: appEvent.foregroundService
+                                has_foreground_service: appEvent.foregroundService,
+                                enabled_accessibility_services: accessibilityPackages
                             },
                             payload: {
                                 proximity_engaged: appEvent.proximityEngaged
@@ -187,8 +256,10 @@ function startTelemetryLoop() {
                     ws.send(JSON.stringify(telemetryPacket));
                 }
             });
-        }, 3000);
-    });
+        } catch (e) {
+            console.log('[!] Error in telemetry loop:', e.message);
+        }
+    }, 3000);
 }
 
 /**
@@ -268,4 +339,34 @@ function getMockActiveAppSensorData() {
     }
 
     return mockEvents;
+}
+
+/**
+ * Parses Android AppOps query-op stdout to identify active recorders/cameras
+ */
+function parseAppOpsOutput(stdout, sensorName) {
+    const list = [];
+    const lines = stdout.split('\n');
+    for (let line of lines) {
+        if (line.includes('active=true')) {
+            // Match package name: usually prefixing mode/active attributes
+            // Examples:
+            // "com.whatsapp: mode=ignore; active=true"
+            // "Package com.whatsapp: android:record_audio: mode=allow; active=true"
+            const match = line.match(/([\w\.]+)(?=:|\s+mode=|\s+active=)/) || line.match(/Package\s+([\w\.]+)/);
+            if (match) {
+                list.push({
+                    package: match[1],
+                    uid: "unknown",
+                    state: "FOREGROUND", // active indicates it is actively running/recording
+                    sensor: sensorName,
+                    rate: 1, // unit frequency for events
+                    screenOff: false,
+                    foregroundService: true,
+                    proximityEngaged: false
+                });
+            }
+        }
+    }
+    return list;
 }

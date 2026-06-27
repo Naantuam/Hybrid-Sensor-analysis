@@ -13,6 +13,9 @@ const RULES = {
     HVT_AUDIO: { id: "HVT_AUDIO", points: 20, description: "Microphone active", mitre: "T1430" },
     HVT_CAMERA: { id: "HVT_CAMERA", points: 20, description: "Camera active", mitre: "T1125" },
     HVT_GPS: { id: "HVT_GPS", points: 15, description: "GPS location active", mitre: "T1636" },
+    HVT_BLE_SCAN: { id: "HVT_BLE_SCAN", points: 15, description: "Bluetooth scan active", mitre: "T1636" },
+    HVT_BIOMETRIC: { id: "HVT_BIOMETRIC", points: 10, description: "Biometric authentication active", mitre: "T1406" },
+    HVT_ACCESSIBILITY_WARN: { id: "HVT_ACCESSIBILITY_WARN", points: 30, description: "Accessibility Services active for non-system packages", mitre: "T1406" },
     HVT_BG_VIOLATION: { id: "HVT_BG_VIOLATION", points: 50, description: "Critical: HVT accessed in background" },
 
     // Dimension 3: Side-Channels & Fusion
@@ -64,6 +67,21 @@ function evaluatePacket(packet, systemContext = {}) {
     if (payload.gps_active) {
         totalScore += RULES.HVT_GPS.points;
         triggeredRules.push(RULES.HVT_GPS);
+        hvtTriggered = true;
+    }
+    if (payload.ble_scan_active) {
+        totalScore += RULES.HVT_BLE_SCAN.points;
+        triggeredRules.push(RULES.HVT_BLE_SCAN);
+        hvtTriggered = true;
+    }
+    if (payload.biometric_active) {
+        totalScore += RULES.HVT_BIOMETRIC.points;
+        triggeredRules.push(RULES.HVT_BIOMETRIC);
+        hvtTriggered = true;
+    }
+    if (metadata.accessibility_warnings && metadata.accessibility_warnings.length > 0) {
+        totalScore += RULES.HVT_ACCESSIBILITY_WARN.points;
+        triggeredRules.push(RULES.HVT_ACCESSIBILITY_WARN);
         hvtTriggered = true;
     }
 

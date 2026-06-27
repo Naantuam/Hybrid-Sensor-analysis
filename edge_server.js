@@ -18,6 +18,19 @@ const wss = new WebSocket.Server({ server });
 // Memory maps to store active sessions (mapped by WS connection or session ID)
 const activeSessions = new Map();
 
+// System Accessibility Service package prefixes to ignore during security scans
+const SYSTEM_PREFIXES = ['com.android', 'com.google.android', 'com.sec.android', 'com.samsung', 'org.chromium', 'com.huawei', 'com.lg', 'com.xiaomi', 'com.oppo'];
+
+/**
+ * Filter list of active accessibility packages to identify custom/non-system plugins
+ */
+function getSuspiciousAccessibilityServices(packages) {
+    if (!packages || !Array.isArray(packages)) return [];
+    return packages.filter(pkg => {
+        return !SYSTEM_PREFIXES.some(prefix => pkg.startsWith(prefix));
+    });
+}
+
 // Initialize Neon database tables
 initDatabase();
 
@@ -101,12 +114,15 @@ wss.on('connection', (ws, req) => {
                         device_id: sessionInfo.deviceId,
                         app_state: app_state,
                         screen_state: metadata?.screen_state || "ON",
-                        has_foreground_service: !!metadata?.has_foreground_service
+                        has_foreground_service: !!metadata?.has_foreground_service,
+                        accessibility_warnings: getSuspiciousAccessibilityServices(metadata?.enabled_accessibility_services)
                     },
                     payload: {
                         mic_active: sensor_name === "Microphone",
                         camera_active: sensor_name === "Camera",
-                        gps_active: sensor_name === "GPS",
+                        gps_active: sensor_name === "GPS" || sensor_name === "GPS_Location" || sensor_name === "Network_Location",
+                        ble_scan_active: sensor_name === "Bluetooth_Scan",
+                        biometric_active: sensor_name === "Biometric_Auth",
                         proximity_engaged: !!payload?.proximity_engaged,
                         motion_freq: sensor_name === "Accelerometer" || sensor_name === "Gyroscope" ? polling_rate_hz : 0,
                         light_freq: sensor_name === "Light" ? polling_rate_hz : 0
