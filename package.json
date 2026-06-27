@@ -2,8 +2,9 @@
   "name": "hybrid-sensor-analysis",
   "version": "1.0.0",
   "description": "",
-  "main": "sensor_agent.js",
+  "main": "edge_server.js",
   "scripts": {
+    "start": "node edge_server.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
