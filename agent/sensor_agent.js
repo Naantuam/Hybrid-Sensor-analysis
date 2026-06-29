@@ -81,8 +81,8 @@ function connectWebSocket() {
  * Sends initial handshake registration payload
  */
 function sendHandshake() {
-    exec('dumpsys wifi | grep -i "SSID:" | head -n 1', (err, stdout) => {
-        let wifiSsid = "Mobile_Network";
+    exec('adb shell dumpsys wifi | grep -i "SSID:" | head -n 1', (err, stdout) => {
+        let wifiSsid = "USB_Tethered/Direct";
         if (!err && stdout) {
             const matches = stdout.match(/SSID: "(.*?)"/);
             if (matches && matches[1]) wifiSsid = matches[1];
@@ -95,7 +95,7 @@ function sendHandshake() {
             },
             payload: {
                 device_id: deviceId,
-                connection_type: wifiSsid === "Mobile_Network" ? "cellular" : "wifi",
+                connection_type: "usb_adb",
                 ssid: wifiSsid,
                 battery_saver_active: batterySaverActive
             }
@@ -270,33 +270,68 @@ function parseSensorServiceOutput(stdout) {
     const lines = stdout.split('\n');
     let inConnectionsSection = false;
 
-    for (let line of lines) {
-        if (line.includes('Active Connection')) {
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+
+        // Detect start of connections section (case-insensitive for MTK and standard variants)
+        if (line.toLowerCase().includes('active connections') || line.toLowerCase().includes('active connection')) {
             inConnectionsSection = true;
             continue;
         }
-        if (inConnectionsSection && line.trim() === '') {
+        
+        // Detect section boundaries
+        if (line.includes('Previous Registrations') || line.includes('0 direct connections')) {
             inConnectionsSection = false;
         }
 
         if (inConnectionsSection) {
-            // Regex matches typical pattern: package_name, active sensor name, sample rates
-            // Example line: com.whatsapp | Sensor: Gyroscope | Rate: 100Hz | UID: 10123
-            const pkgMatch = line.match(/([\w\.]+)\s*\|\s*Sensor:\s*([\w\s]+)/);
-            if (pkgMatch) {
-                const rateMatch = line.match(/Rate:\s*(\d+)Hz/);
-                const uidMatch = line.match(/UID:\s*(\d+)/);
-                
-                appsList.push({
-                    package: pkgMatch[1],
-                    sensor: pkgMatch[2].trim(),
-                    rate: rateMatch ? parseInt(rateMatch[1]) : 50,
-                    uid: uidMatch ? uidMatch[1] : "unknown",
-                    state: line.includes('BACKGROUND') ? 'BACKGROUND' : 'FOREGROUND',
-                    screenOff: line.includes('ScreenOff'),
-                    foregroundService: line.includes('ForegroundService'),
-                    proximityEngaged: line.includes('ProximityNear')
-                });
+            // Layout 1: Multi-line MediaTek/Infinix format
+            if (line.toLowerCase().startsWith('connection number:')) {
+                const packageLine = lines[i + 1] ? lines[i + 1].trim() : '';
+                const sensorLine = lines[i + 2] ? lines[i + 2].trim() : '';
+
+                if (packageLine && sensorLine) {
+                    const pkgParts = packageLine.split('|');
+                    const pkgName = pkgParts[0].trim();
+                    const uidMatch = packageLine.match(/uid\s+(\d+)/) || packageLine.match(/uid:?\s*(\d+)/);
+
+                    const sensorParts = sensorLine.split('|');
+                    const sensorMatch = sensorParts[0].match(/^([\w\s]+)(?=\s+0x|\s+\d)/) || [null, sensorParts[0].trim()];
+                    const sensorName = sensorMatch[1] ? sensorMatch[1].trim() : sensorParts[0].trim();
+                    const isActive = sensorLine.toLowerCase().includes('active');
+
+                    if (isActive && pkgName && !pkgName.startsWith('Connection Number')) {
+                        appsList.push({
+                            package: pkgName,
+                            sensor: sensorName,
+                            rate: 50,
+                            uid: uidMatch ? uidMatch[1] : "unknown",
+                            state: packageLine.includes('BACKGROUND') ? 'BACKGROUND' : 'FOREGROUND',
+                            screenOff: sensorLine.includes('ScreenOff') || packageLine.includes('ScreenOff'),
+                            foregroundService: packageLine.includes('ForegroundService'),
+                            proximityEngaged: sensorName.toLowerCase().includes('proximity')
+                        });
+                    }
+                }
+                i += 2; // Skip multi-line block
+            }
+            // Layout 2: Single-line legacy format
+            else {
+                const pkgMatch = line.match(/([\w\.]+)\s*\|\s*Sensor:\s*([\w\s]+)/);
+                if (pkgMatch) {
+                    const rateMatch = line.match(/Rate:\s*(\d+)Hz/);
+                    const uidMatch = line.match(/UID:\s*(\d+)/);
+                    appsList.push({
+                        package: pkgMatch[1],
+                        sensor: pkgMatch[2].trim(),
+                        rate: rateMatch ? parseInt(rateMatch[1]) : 50,
+                        uid: uidMatch ? uidMatch[1] : "unknown",
+                        state: line.includes('BACKGROUND') ? 'BACKGROUND' : 'FOREGROUND',
+                        screenOff: line.includes('ScreenOff'),
+                        foregroundService: line.includes('ForegroundService'),
+                        proximityEngaged: pkgMatch[2].toLowerCase().includes('proximity')
+                    });
+                }
             }
         }
     }
