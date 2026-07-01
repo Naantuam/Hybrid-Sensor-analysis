@@ -247,7 +247,6 @@ function startTelemetryLoop() {
 
             activeAppPackages.forEach((appEvent) => {
                 if (ws && ws.readyState === WebSocket.OPEN && sessionRegistered) {
-                    console.log(`[→] Transmitting telemetry: App "${appEvent.package}" using sensor "${appEvent.sensor}" (${appEvent.state})`);
                     const telemetryPacket = {
                         event_type: "app_sensor_telemetry",
                         metadata: {
