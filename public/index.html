@@ -1,0 +1,808 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hybrid Sensor Threat Analysis Dashboard</title>
+    <!-- Premium Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    
+    <style>
+        :root {
+            --bg-dark: #090a0f;
+            --card-bg: rgba(18, 20, 32, 0.6);
+            --border-color: rgba(255, 255, 255, 0.08);
+            --primary-glow: rgba(0, 242, 254, 0.15);
+            --text-main: #f3f4f6;
+            --text-muted: #9ca3af;
+            
+            /* Status Colors */
+            --color-benign: #10b981;
+            --color-suspicious: #f59e0b;
+            --color-critical: #ef4444;
+            --color-glow-critical: rgba(239, 68, 68, 0.25);
+            
+            /* UI Accents */
+            --accent-cyan: #00f2fe;
+            --accent-purple: #4facfe;
+            --gradient-accent: linear-gradient(135deg, #00f2fe 0%, #4facfe 100%);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Plus Jakarta Sans', sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-dark);
+            color: var(--text-main);
+            overflow-x: hidden;
+            display: flex;
+            min-height: 100vh;
+        }
+
+        /* Glassmorphic Background Blur Circles */
+        .blur-circle {
+            position: absolute;
+            width: 400px;
+            height: 400px;
+            border-radius: 50%;
+            filter: blur(150px);
+            z-index: -1;
+            opacity: 0.4;
+        }
+        .circle-1 {
+            top: -100px;
+            left: -100px;
+            background: #00f2fe;
+        }
+        .circle-2 {
+            bottom: -100px;
+            right: -100px;
+            background: #7f00ff;
+        }
+
+        /* Sidebar Style */
+        .sidebar {
+            width: 320px;
+            background: rgba(10, 11, 20, 0.95);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+            z-index: 10;
+        }
+
+        .sidebar-header {
+            padding: 24px;
+            border-bottom: 1px solid var(--border-color);
+            background: linear-gradient(to right, rgba(0,242,254,0.05), transparent);
+        }
+
+        .sidebar-header h1 {
+            font-family: 'Outfit', sans-serif;
+            font-size: 20px;
+            font-weight: 700;
+            background: var(--gradient-accent);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .sidebar-header p {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-top: 4px;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+        }
+
+        .session-list {
+            flex-grow: 1;
+            overflow-y: auto;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .session-card {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 14px;
+            cursor: pointer;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .session-card:hover {
+            background: rgba(255, 255, 255, 0.05);
+            border-color: rgba(0, 242, 254, 0.3);
+            transform: translateY(-2px);
+        }
+
+        .session-card.active {
+            background: rgba(0, 242, 254, 0.06);
+            border-color: var(--accent-cyan);
+            box-shadow: 0 4px 20px rgba(0, 242, 254, 0.1);
+        }
+
+        .session-card h3 {
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 4px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .session-card .session-id {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 2px 6px;
+            border-radius: 6px;
+            font-size: 10px;
+            font-family: monospace;
+        }
+
+        .session-card p {
+            font-size: 12px;
+            color: var(--text-muted);
+            line-height: 1.4;
+        }
+
+        .session-card .time {
+            font-size: 11px;
+            color: var(--accent-cyan);
+            margin-top: 6px;
+            font-weight: 500;
+        }
+
+        /* Main Workspace Style */
+        .main-content {
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow-y: auto;
+            position: relative;
+        }
+
+        .header {
+            padding: 24px 40px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border-color);
+            background: rgba(9, 10, 15, 0.5);
+            backdrop-filter: blur(10px);
+            position: sticky;
+            top: 0;
+            z-index: 5;
+        }
+
+        .device-info h2 {
+            font-family: 'Outfit', sans-serif;
+            font-size: 24px;
+            font-weight: 700;
+        }
+
+        .device-info p {
+            font-size: 13px;
+            color: var(--text-muted);
+            margin-top: 2px;
+        }
+
+        .connection-status {
+            background: rgba(16, 185, 129, 0.1);
+            border: 1px solid var(--color-benign);
+            color: var(--color-benign);
+            padding: 8px 16px;
+            border-radius: 30px;
+            font-size: 12px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+        }
+
+        .connection-status.offline {
+            background: rgba(255, 255, 255, 0.05);
+            border-color: var(--text-muted);
+            color: var(--text-muted);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            background-color: currentColor;
+            border-radius: 50%;
+            box-shadow: 0 0 8px currentColor;
+        }
+
+        /* Dashboard Body */
+        .workspace {
+            padding: 40px;
+            display: flex;
+            flex-direction: column;
+            gap: 30px;
+        }
+
+        /* KPI Scorecards Grid */
+        .kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 20px;
+        }
+
+        .kpi-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 24px;
+            position: relative;
+            overflow: hidden;
+            backdrop-filter: blur(12px);
+            transition: all 0.3s ease;
+        }
+
+        .kpi-card:hover {
+            transform: translateY(-3px);
+            border-color: rgba(255, 255, 255, 0.15);
+        }
+
+        .kpi-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 3px;
+            background: var(--gradient-accent);
+        }
+
+        .kpi-card h4 {
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-muted);
+            margin-bottom: 12px;
+        }
+
+        .kpi-card .value {
+            font-family: 'Outfit', sans-serif;
+            font-size: 36px;
+            font-weight: 800;
+            line-height: 1;
+        }
+
+        .kpi-card .meta-desc {
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-top: 8px;
+        }
+
+        /* Custom glow for Critical alerts card */
+        .kpi-card.critical-score::before {
+            background: var(--color-critical);
+            box-shadow: 0 0 10px var(--color-critical);
+        }
+
+        .kpi-card.critical-score .value {
+            color: var(--color-critical);
+            text-shadow: 0 0 15px var(--color-glow-critical);
+        }
+
+        /* Section Columns Layout */
+        .dashboard-body {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 30px;
+        }
+
+        .section-box {
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 24px;
+            backdrop-filter: blur(12px);
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .section-box h3 {
+            font-family: 'Outfit', sans-serif;
+            font-size: 18px;
+            font-weight: 700;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        /* Grid / Table Styles */
+        .alerts-table-container {
+            overflow-x: auto;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .alerts-table {
+            width: 100%;
+            border-collapse: collapse;
+            text-align: left;
+        }
+
+        .alerts-table th {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-muted);
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .alerts-table td {
+            font-size: 13px;
+            padding: 16px;
+            border-bottom: 1px solid var(--border-color);
+            vertical-align: middle;
+        }
+
+        .alerts-table tr:hover td {
+            background: rgba(255, 255, 255, 0.01);
+        }
+
+        /* Threat Badges */
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .badge-benign {
+            background: rgba(16, 185, 129, 0.12);
+            color: var(--color-benign);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+        }
+
+        .badge-suspicious {
+            background: rgba(245, 158, 11, 0.12);
+            color: var(--color-suspicious);
+            border: 1px solid rgba(245, 158, 11, 0.3);
+        }
+
+        .badge-critical {
+            background: rgba(239, 68, 68, 0.12);
+            color: var(--color-critical);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            box-shadow: 0 0 10px rgba(239, 68, 68, 0.05);
+        }
+
+        /* Real-Time Live log stream */
+        .live-stream-box {
+            background: rgba(5, 6, 10, 0.8);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 16px;
+            font-family: monospace;
+            font-size: 11px;
+            color: var(--color-benign);
+            height: 350px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .stream-line {
+            display: flex;
+            gap: 10px;
+            line-height: 1.4;
+        }
+
+        .stream-time {
+            color: var(--text-muted);
+            flex-shrink: 0;
+        }
+
+        .stream-tag {
+            color: var(--accent-cyan);
+            font-weight: 700;
+        }
+
+        /* Rules block styles inside threat grid */
+        .rule-pill {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 2px 6px;
+            font-size: 11px;
+            color: var(--text-main);
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            margin: 2px;
+        }
+
+        .rule-score {
+            font-weight: 700;
+            color: var(--accent-cyan);
+        }
+
+        .mitre-link {
+            color: var(--accent-cyan);
+            text-decoration: none;
+            border-bottom: 1px dotted var(--accent-cyan);
+            font-weight: 600;
+        }
+
+        .mitre-link:hover {
+            color: var(--text-main);
+            border-color: var(--text-main);
+        }
+
+        /* Modifiers Applied list */
+        .modifier-text {
+            font-size: 11px;
+            color: var(--color-benign);
+            font-style: italic;
+            margin-top: 4px;
+            display: block;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="blur-circle circle-1"></div>
+    <div class="blur-circle circle-2"></div>
+
+    <!-- LEFT SIDEBAR: SESSION LIST -->
+    <div class="sidebar">
+        <div class="sidebar-header">
+            <h1>🛡️ Hybrid Monitor</h1>
+            <p>Threat Assessment Panel</p>
+        </div>
+        <div class="session-list" id="sessionsContainer">
+            <!-- Dynamically populated session cards -->
+        </div>
+    </div>
+
+    <!-- MAIN PANEL -->
+    <div class="main-content">
+        <div class="header">
+            <div class="device-info" id="headerDeviceInfo">
+                <h2>No Session Selected</h2>
+                <p>Select a connected device to inspect metrics</p>
+            </div>
+            <div class="connection-status offline" id="connectionStatusBadge">
+                <span class="status-dot"></span>
+                <span id="connectionStatusText">Offline</span>
+            </div>
+        </div>
+
+        <div class="workspace">
+            <!-- SCORECARDS -->
+            <div class="kpi-grid">
+                <div class="kpi-card critical-score">
+                    <h4>Max Threat Score</h4>
+                    <div class="value" id="kpiMaxScore">0</div>
+                    <div class="meta-desc">Highest observed risk rating</div>
+                </div>
+                <div class="kpi-card">
+                    <h4>Security Alarms</h4>
+                    <div class="value" id="kpiTotalThreats">0</div>
+                    <div class="meta-desc">Non-benign tactical violations</div>
+                </div>
+                <div class="kpi-card">
+                    <h4>Telemetry Events</h4>
+                    <div class="value" id="kpiTotalEvents">0</div>
+                    <div class="meta-desc">Raw hardware packets recorded</div>
+                </div>
+                <div class="kpi-card">
+                    <h4>Power Saving</h4>
+                    <div class="value" id="kpiBatterySaver">OFF</div>
+                    <div class="meta-desc">Device battery saver state</div>
+                </div>
+            </div>
+
+            <!-- ANALYZED DATA & LIVE STREAM -->
+            <div class="dashboard-body">
+                <!-- GRID: THREAT ALERTS -->
+                <div class="section-box">
+                    <h3>
+                        <span>⚠️ Analyzed Threat Detections</span>
+                        <span style="font-size: 12px; font-weight: normal; color: var(--text-muted);">Tactical Mappings & MITRE Alignments</span>
+                    </h3>
+                    <div class="alerts-table-container">
+                        <table class="alerts-table">
+                            <thead>
+                                <tr>
+                                    <th>Timestamp</th>
+                                    <th>App / Package</th>
+                                    <th>Threat Level</th>
+                                    <th>Risk Points</th>
+                                    <th>Rule / Trigger Condition</th>
+                                </tr>
+                            </thead>
+                            <tbody id="threatsTableBody">
+                                <tr>
+                                    <td colspan="5" style="text-align: center; color: var(--text-muted); padding: 40px;">Select a session to load alerts</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- LIVE CONSOLE STREAM -->
+                <div class="section-box">
+                    <h3>🟢 Live Analysis Stream</h3>
+                    <div class="live-stream-box" id="liveConsoleStream">
+                        <div class="stream-line">
+                            <span class="stream-time">[System]</span>
+                            <span>Awaiting live sensor data connection...</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- JAVASCRIPT: LOGIC & REST & WEBSOCKET -->
+    <script>
+        let selectedSessionId = null;
+        let wsBroker = null;
+        let onlineSessions = new Set();
+
+        // 1. Fetch and Load Sessions List
+        async function loadSessions() {
+            try {
+                const response = await fetch('/api/sessions');
+                const sessions = await response.json();
+                
+                const container = document.getElementById('sessionsContainer');
+                container.innerHTML = '';
+                
+                if (sessions.length === 0) {
+                    container.innerHTML = `<div style="text-align: center; color: var(--text-muted); padding: 20px;">No sessions found</div>`;
+                    return;
+                }
+
+                sessions.forEach(session => {
+                    const isOnline = onlineSessions.has(session.id);
+                    const formattedDate = new Date(session.connected_at).toLocaleString();
+                    
+                    const card = document.createElement('div');
+                    card.className = `session-card ${selectedSessionId === session.id ? 'active' : ''}`;
+                    card.innerHTML = `
+                        <h3>
+                            <span>📱 ${session.device_id.replace(/_/g, ' ')}</span>
+                            <span class="session-id">ID: ${session.id}</span>
+                        </h3>
+                        <p>OS: Android ${session.os_version || 'Unknown'} (API ${session.api_level || 'N/A'})</p>
+                        <p>Network: ${session.ssid || 'Cellular'}</p>
+                        <div class="time">${formattedDate}</div>
+                    `;
+                    
+                    card.onclick = () => selectSession(session);
+                    container.appendChild(card);
+                });
+            } catch (err) {
+                console.error('[!] Error loading sessions:', err);
+            }
+        }
+
+        // 2. Select and Load Session Data
+        async function selectSession(session) {
+            selectedSessionId = session.id;
+            
+            // Update Active Card Styling
+            const cards = document.querySelectorAll('.session-card');
+            cards.forEach(card => card.classList.remove('active'));
+            event?.currentTarget?.classList.add('active');
+
+            // Update Header Device Info
+            document.getElementById('headerDeviceInfo').innerHTML = `
+                <h2>📱 ${session.device_id.replace(/_/g, ' ')} [Session #${session.id}]</h2>
+                <p>Android Version ${session.os_version || 'Unknown'} (API Level ${session.api_level || 'N/A'}) | Network SSID: ${session.ssid || 'Cellular'}</p>
+            `;
+
+            // Update Connection Status Badge
+            const statusBadge = document.getElementById('connectionStatusBadge');
+            const statusText = document.getElementById('connectionStatusText');
+            if (onlineSessions.has(session.id)) {
+                statusBadge.className = 'connection-status';
+                statusText.innerText = 'Online';
+            } else {
+                statusBadge.className = 'connection-status offline';
+                statusText.innerText = 'Offline';
+            }
+
+            // Load KPI Stats
+            await loadSessionStats(session.id);
+
+            // Load Threat alerts grid
+            await loadThreatAlerts(session.id);
+        }
+
+        // 3. Load Session Stats
+        async function loadSessionStats(sessionId) {
+            try {
+                const response = await fetch(`/api/sessions/${sessionId}/stats`);
+                const stats = await response.json();
+                
+                document.getElementById('kpiMaxScore').innerText = stats.max_score || 0;
+                document.getElementById('kpiTotalThreats').innerText = stats.total_threats || 0;
+                document.getElementById('kpiTotalEvents').innerText = stats.total_events || 0;
+            } catch (err) {
+                console.error('[!] Error loading stats:', err);
+            }
+        }
+
+        // 4. Load Threat Alerts
+        async function loadThreatAlerts(sessionId) {
+            try {
+                const response = await fetch(`/api/sessions/${sessionId}/threats`);
+                const threats = await response.json();
+                
+                const tableBody = document.getElementById('threatsTableBody');
+                tableBody.innerHTML = '';
+                
+                if (threats.length === 0) {
+                    tableBody.innerHTML = `
+                        <tr>
+                            <td colspan="5" style="text-align: center; color: var(--text-muted); padding: 40px;">No threat alerts logged for this session. System clean.</td>
+                        </tr>
+                    `;
+                    return;
+                }
+
+                threats.forEach(alert => {
+                    const formattedTime = new Date(alert.timestamp || alert.connected_at).toLocaleTimeString();
+                    
+                    // Format threat badge
+                    let badgeClass = 'badge-benign';
+                    if (alert.threat_level === 'SUSPICIOUS') badgeClass = 'badge-suspicious';
+                    if (alert.threat_level === 'CRITICAL') badgeClass = 'badge-critical';
+                    
+                    // Format triggered rules
+                    let rulesHtml = '';
+                    const rulesList = Array.isArray(alert.triggered_rules) ? alert.triggered_rules : JSON.parse(alert.triggered_rules || '[]');
+                    rulesList.forEach(rule => {
+                        rulesHtml += `
+                            <span class="rule-pill">
+                                <strong>${rule.tactic}:</strong> ${rule.description}
+                                ${rule.mitre ? `<a href="https://attack.mitre.org/techniques/${rule.mitre}" target="_blank" class="mitre-link">(${rule.mitre})</a>` : ''}
+                                <span class="rule-score">+${rule.points}</span>
+                            </span>
+                        `;
+                    });
+
+                    // Format modifiers
+                    let modifiersHtml = '';
+                    const modifiersList = Array.isArray(alert.modifiers) ? alert.modifiers : JSON.parse(alert.modifiers || '[]');
+                    modifiersList.forEach(mod => {
+                        modifiersHtml += `<span class="modifier-text">🛡️ Exemption Applied: ${mod}</span>`;
+                    });
+
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td>${formattedTime}</td>
+                        <td><strong>${alert.app_package}</strong></td>
+                        <td><span class="badge ${badgeClass}">${alert.threat_level}</span></td>
+                        <td style="font-weight: 700;">${alert.score} pts</td>
+                        <td>
+                            ${rulesHtml}
+                            ${modifiersHtml}
+                        </td>
+                    `;
+                    tableBody.appendChild(row);
+                });
+            } catch (err) {
+                console.error('[!] Error loading threat alerts:', err);
+            }
+        }
+
+        // 5. Establish WebSocket connection to display real-time sensor streams
+        function connectWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}`;
+            
+            console.log('[*] Connecting to WebSocket Server at', wsUrl);
+            wsBroker = new WebSocket(wsUrl);
+
+            wsBroker.onopen = () => {
+                logToStream('System', 'Connected to secure live analytics feed.');
+            };
+
+            wsBroker.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    
+                    // If server broadcasts a real-time threat alert
+                    if (data.event_type === "security_alert") {
+                        const alert = data.payload;
+                        
+                        logToStream(
+                            alert.threat_level, 
+                            `Alert! App "${alert.app_package}" triggered Score: ${alert.score} [Level: ${alert.threat_level}]`
+                        );
+
+                        // If the currently selected session triggered it, refresh dashboard
+                        if (selectedSessionId === alert.session_id) {
+                            loadSessionStats(alert.session_id);
+                            loadThreatAlerts(alert.session_id);
+                        }
+                    } 
+                    
+                    // Active session synchronization
+                    else if (data.event_type === "active_sessions_sync") {
+                        onlineSessions = new Set(data.sessions);
+                        loadSessions();
+                        if (selectedSessionId) {
+                            const statusBadge = document.getElementById('connectionStatusBadge');
+                            const statusText = document.getElementById('connectionStatusText');
+                            if (onlineSessions.has(selectedSessionId)) {
+                                statusBadge.className = 'connection-status';
+                                statusText.innerText = 'Online';
+                            } else {
+                                statusBadge.className = 'connection-status offline';
+                                statusText.innerText = 'Offline';
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.error('[!] Error parsing socket data:', e);
+                }
+            };
+
+            wsBroker.onclose = () => {
+                logToStream('System', 'Disconnected from live feed. Reconnecting in 5 seconds...');
+                setTimeout(connectWebSocket, 5000);
+            };
+        }
+
+        // Log formatter helper
+        function logToStream(tag, message) {
+            const stream = document.getElementById('liveConsoleStream');
+            const formattedTime = new Date().toLocaleTimeString();
+            
+            const line = document.createElement('div');
+            line.className = 'stream-line';
+            
+            let color = 'var(--color-benign)';
+            if (tag === 'SUSPICIOUS') color = 'var(--color-suspicious)';
+            if (tag === 'CRITICAL') color = 'var(--color-critical)';
+            if (tag === 'System') color = 'var(--text-muted)';
+
+            line.innerHTML = `
+                <span class="stream-time">[${formattedTime}]</span>
+                <span class="stream-tag" style="color: ${color};">[${tag}]</span>
+                <span>${message}</span>
+            `;
+            
+            stream.appendChild(line);
+            stream.scrollTop = stream.scrollHeight;
+        }
+
+        // Initialize dashboard boot sequence
+        loadSessions();
+        connectWebSocket();
+    </script>
+</body>
+</html>

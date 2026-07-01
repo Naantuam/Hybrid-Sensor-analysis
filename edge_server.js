@@ -2,12 +2,23 @@ const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
 const cors = require('cors');
-const { initDatabase, saveSession, updateSessionBatterySaver, saveSensorEvent, saveThreatAlert } = require('./db');
+const { 
+    initDatabase, 
+    saveSession, 
+    updateSessionBatterySaver, 
+    saveSensorEvent, 
+    saveThreatAlert,
+    getSessions,
+    getSessionStats,
+    getThreatAlerts,
+    getSensorEvents
+} = require('./db');
 const { evaluatePacket } = require('./rules');
 
 // Initialize the Web Server
 const app = express();
 app.use(cors());
+app.use(express.static('public'));
 
 // Create an HTTP server attached to Express
 const server = http.createServer(app);
@@ -31,6 +42,22 @@ function getSuspiciousAccessibilityServices(packages) {
     });
 }
 
+/**
+ * Broadcasts the current active online sessions to all dashboard clients
+ */
+function broadcastActiveSessions() {
+    const sessionIds = Array.from(activeSessions.values()).map(s => s.sessionId);
+    const syncPayload = {
+        event_type: "active_sessions_sync",
+        sessions: sessionIds
+    };
+    wss.clients.forEach((client) => {
+        if (client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify(syncPayload));
+        }
+    });
+}
+
 // Initialize Neon database tables
 initDatabase();
 
@@ -38,6 +65,13 @@ initDatabase();
 wss.on('connection', (ws, req) => {
     const clientIp = req.socket.remoteAddress;
     console.log(`\n[+] New Connection Established: ${clientIp}`);
+
+    // Send immediate sync of active online sessions to this connection (for frontend load)
+    const sessionIds = Array.from(activeSessions.values()).map(s => s.sessionId);
+    ws.send(JSON.stringify({
+        event_type: "active_sessions_sync",
+        sessions: sessionIds
+    }));
 
     ws.on('message', async (message) => {
         try {
@@ -69,6 +103,9 @@ wss.on('connection', (ws, req) => {
                 });
                 
                 console.log(`[+] Registered Session ID ${sessionId} for Device: ${device_id} on network: ${ssid}`);
+                
+                // Broadcast active sessions update to dashboards
+                broadcastActiveSessions();
                 
                 // Confirm registration back to client
                 ws.send(JSON.stringify({
@@ -186,6 +223,7 @@ wss.on('connection', (ws, req) => {
     ws.on('close', () => {
         activeSessions.delete(ws);
         console.log(`\n[-] Connection Closed: ${clientIp}`);
+        broadcastActiveSessions();
     });
 });
 
@@ -196,6 +234,46 @@ app.get('/api/health', (req, res) => {
         active_connections: wss.clients.size,
         registered_sessions: activeSessions.size
     });
+});
+
+// Get all sessions
+app.get('/api/sessions', async (req, res) => {
+    try {
+        const sessions = await getSessions();
+        res.json(sessions);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Get session stats
+app.get('/api/sessions/:id/stats', async (req, res) => {
+    try {
+        const stats = await getSessionStats(parseInt(req.params.id));
+        res.json(stats);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Get session threats
+app.get('/api/sessions/:id/threats', async (req, res) => {
+    try {
+        const threats = await getThreatAlerts(parseInt(req.params.id));
+        res.json(threats);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Get session events
+app.get('/api/sessions/:id/events', async (req, res) => {
+    try {
+        const events = await getSensorEvents(parseInt(req.params.id));
+        res.json(events);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // Start the Edge Server

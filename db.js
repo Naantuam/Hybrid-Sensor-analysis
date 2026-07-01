@@ -147,11 +147,85 @@ async function saveThreatAlert(sessionId, threat_level, score, triggered_rules, 
     ]);
 }
 
+/**
+ * Retrieves all sessions
+ */
+async function getSessions() {
+    if (!connectionString) return [];
+    const query = `
+        SELECT * FROM sessions 
+        ORDER BY connected_at DESC 
+        LIMIT 100;
+    `;
+    const res = await pool.query(query);
+    return res.rows;
+}
+
+/**
+ * Retrieves aggregated stats for a specific session
+ */
+async function getSessionStats(sessionId) {
+    if (!connectionString) return { max_score: 0, total_threats: 0, total_events: 0, active_apps: [] };
+    
+    const statsQuery = `
+        SELECT 
+            (SELECT COALESCE(MAX(score), 0) FROM threat_alerts WHERE session_id = $1) as max_score,
+            (SELECT COUNT(*) FROM threat_alerts WHERE session_id = $1) as total_threats,
+            (SELECT COUNT(*) FROM sensor_events WHERE session_id = $1) as total_events;
+    `;
+    const statsRes = await pool.query(statsQuery, [sessionId]);
+    
+    const appsQuery = `
+        SELECT DISTINCT app_package FROM sensor_events WHERE session_id = $1;
+    `;
+    const appsRes = await pool.query(appsQuery, [sessionId]);
+    
+    return {
+        max_score: parseInt(statsRes.rows[0].max_score),
+        total_threats: parseInt(statsRes.rows[0].total_threats),
+        total_events: parseInt(statsRes.rows[0].total_events),
+        active_apps: appsRes.rows.map(r => r.app_package)
+    };
+}
+
+/**
+ * Retrieves threat alerts for a specific session
+ */
+async function getThreatAlerts(sessionId) {
+    if (!connectionString) return [];
+    const query = `
+        SELECT * FROM threat_alerts 
+        WHERE session_id = $1 
+        ORDER BY timestamp DESC;
+    `;
+    const res = await pool.query(query, [sessionId]);
+    return res.rows;
+}
+
+/**
+ * Retrieves raw sensor events for a specific session
+ */
+async function getSensorEvents(sessionId) {
+    if (!connectionString) return [];
+    const query = `
+        SELECT * FROM sensor_events 
+        WHERE session_id = $1 
+        ORDER BY timestamp DESC 
+        LIMIT 200;
+    `;
+    const res = await pool.query(query, [sessionId]);
+    return res.rows;
+}
+
 module.exports = {
     initDatabase,
     saveSession,
     updateSessionBatterySaver,
     saveSensorEvent,
     saveThreatAlert,
+    getSessions,
+    getSessionStats,
+    getThreatAlerts,
+    getSensorEvents,
     pool
 };

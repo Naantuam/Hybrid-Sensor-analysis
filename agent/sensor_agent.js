@@ -25,7 +25,7 @@ function detectDeviceDetails(callback) {
     exec('adb shell getprop ro.product.model', (errModel, stdoutModel) => {
         const isAdb = !errModel && stdoutModel.trim() !== "";
         const propCmd = isAdb ? 'adb shell getprop' : 'getprop';
-        
+
         exec(`${propCmd} ro.product.model`, (err, stdout) => {
             if (!err && stdout.trim()) {
                 deviceId = stdout.trim().replace(/\s+/g, '_');
@@ -86,7 +86,7 @@ function connectWebSocket() {
         sessionRegistered = false;
         clearInterval(telemetryInterval);
         clearInterval(batteryInterval);
-        
+
         // Swap endpoints if failover is needed
         if (activeUrl === LOCAL_URL) {
             console.log(`[*] Swapping to Cloud failover endpoint: ${CLOUD_URL}`);
@@ -95,7 +95,7 @@ function connectWebSocket() {
             console.log(`[*] Retrying Local endpoint: ${LOCAL_URL}`);
             activeUrl = LOCAL_URL;
         }
-        
+
         // Reconnect after 5 seconds
         setTimeout(connectWebSocket, 5000);
     });
@@ -143,11 +143,11 @@ function startBatteryMonitoring() {
                 // Android typically exposes battery saver via settings, but we can also trigger
                 // based on percentage <= 15% and not charging as a safety threshold.
                 const isBatteryLow = info.percentage <= 15 && info.status !== "CHARGING";
-                
+
                 if (isBatteryLow !== batterySaverActive) {
                     batterySaverActive = isBatteryLow;
                     console.log(`[*] Battery state shifted. Battery Saver Active: ${batterySaverActive}`);
-                    
+
                     // Notify the server of state change
                     if (ws && ws.readyState === WebSocket.OPEN) {
                         ws.send(JSON.stringify({
@@ -155,7 +155,7 @@ function startBatteryMonitoring() {
                             payload: { battery_saver_active: batterySaverActive }
                         }));
                     }
-                    
+
                     if (batterySaverActive) {
                         console.log('[!] Suspending telemetry collection to conserve battery power.');
                         clearInterval(telemetryInterval);
@@ -164,7 +164,7 @@ function startBatteryMonitoring() {
                         startTelemetryLoop();
                     }
                 }
-            } catch (e) {}
+            } catch (e) { }
         });
     }, 10000);
 }
@@ -185,13 +185,13 @@ function execPromise(command) {
  */
 function startTelemetryLoop() {
     if (batterySaverActive) return;
-    
+
     clearInterval(telemetryInterval);
     telemetryInterval = setInterval(async () => {
         try {
             // Run system dumpsys diagnostics concurrently
             const [
-                sensorRes, audioRes, cameraRes, 
+                sensorRes, audioRes, cameraRes,
                 locationRes, bluetoothRes, accessRes
             ] = await Promise.all([
                 execPromise('adb shell dumpsys sensorservice'),
@@ -293,7 +293,7 @@ function parseSensorServiceOutput(stdout) {
             inConnectionsSection = true;
             continue;
         }
-        
+
         // Detect section boundaries
         if (line.includes('Previous Registrations') || line.includes('0 direct connections')) {
             inConnectionsSection = false;
@@ -360,7 +360,7 @@ function parseAudioOutput(stdout) {
     const list = [];
     const lines = stdout.split('\n');
     const activeRecords = new Map();
-    
+
     lines.forEach(line => {
         if (line.includes('rec start')) {
             const riidMatch = line.match(/riid:(\d+)/);
@@ -379,7 +379,7 @@ function parseAudioOutput(stdout) {
             }
         }
     });
-    
+
     activeRecords.forEach((record) => {
         list.push({
             package: record.package,
@@ -401,7 +401,7 @@ function parseAudioOutput(stdout) {
 function parseCameraOutput(stdout) {
     const list = [];
     const clientSection = stdout.match(/Active Camera Clients:\s*\n?([^]*?)(?=\n\n|\nAllowed user IDs:|\n==)/i);
-    
+
     if (clientSection && clientSection[1]) {
         const lines = clientSection[1].split('\n');
         lines.forEach(line => {
@@ -450,14 +450,14 @@ function parseLocationOutput(stdout) {
             if (providerMatch) {
                 currentProvider = providerMatch[1];
             }
-            
+
             // Match pattern: UpdateRecord[passive android(1000 foreground) Request[...]]
             const recordMatch = line.match(/UpdateRecord\[\w+\s+([\w\.]+)\((\d+)\s+(\w+)\)/);
             if (recordMatch) {
                 const pkgName = recordMatch[1];
                 const uid = recordMatch[2];
                 const appState = recordMatch[3].toUpperCase();
-                
+
                 // Skip system packages
                 if (pkgName !== 'android' && pkgName !== 'system') {
                     list.push({
