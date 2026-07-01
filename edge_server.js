@@ -45,7 +45,7 @@ wss.on('connection', (ws, req) => {
             
             // 1. Handshake Session Registration Event
             if (packet.event_type === "agent_session") {
-                const { device_id, connection_type, ssid, battery_saver_active } = packet.payload || {};
+                const { device_id, connection_type, ssid, battery_saver_active, api_level, os_version } = packet.payload || {};
                 
                 // Save connection details in the database
                 const sessionId = await saveSession(
@@ -53,7 +53,9 @@ wss.on('connection', (ws, req) => {
                     clientIp,
                     connection_type || "unknown",
                     ssid || "unknown",
-                    !!battery_saver_active
+                    !!battery_saver_active,
+                    api_level || null,
+                    os_version || null
                 );
                 
                 // Map connection to the session ID
@@ -61,7 +63,9 @@ wss.on('connection', (ws, req) => {
                     sessionId,
                     deviceId: device_id,
                     ssid,
-                    batterySaverActive: !!battery_saver_active
+                    batterySaverActive: !!battery_saver_active,
+                    apiLevel: api_level || null,
+                    osVersion: os_version || null
                 });
                 
                 console.log(`[+] Registered Session ID ${sessionId} for Device: ${device_id} on network: ${ssid}`);

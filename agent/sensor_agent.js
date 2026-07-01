@@ -14,15 +14,39 @@ let batterySaverActive = false;
 let telemetryInterval = null;
 let batteryInterval = null;
 
+let apiLevel = 29;
+let osVersion = "Unknown";
+
 console.log(`[*] Target Local Endpoint: ${LOCAL_URL}`);
 console.log(`[*] Target Cloud Endpoint: ${CLOUD_URL}`);
 
-// Initialize Device ID dynamically
-exec('getprop ro.product.model', (err, stdout) => {
-    if (!err && stdout.trim()) {
-        deviceId = stdout.trim().replace(/\s+/g, '_');
-    }
-    console.log(`[+] Resolved Device ID: ${deviceId}`);
+// Initialize Device ID and build attributes dynamically (handles PC adb & local Termux)
+function detectDeviceDetails(callback) {
+    exec('adb shell getprop ro.product.model', (errModel, stdoutModel) => {
+        const isAdb = !errModel && stdoutModel.trim() !== "";
+        const propCmd = isAdb ? 'adb shell getprop' : 'getprop';
+        
+        exec(`${propCmd} ro.product.model`, (err, stdout) => {
+            if (!err && stdout.trim()) {
+                deviceId = stdout.trim().replace(/\s+/g, '_');
+            }
+            exec(`${propCmd} ro.build.version.sdk`, (errSdk, stdoutSdk) => {
+                if (!errSdk && stdoutSdk.trim()) {
+                    apiLevel = parseInt(stdoutSdk.trim()) || 29;
+                }
+                exec(`${propCmd} ro.build.version.release`, (errRel, stdoutRel) => {
+                    if (!errRel && stdoutRel.trim()) {
+                        osVersion = stdoutRel.trim();
+                    }
+                    console.log(`[+] Detected OS: Android ${osVersion} (API Level ${apiLevel}) [Bridge: ${isAdb ? 'USB adb' : 'Local termux'}]`);
+                    callback();
+                });
+            });
+        });
+    });
+}
+
+detectDeviceDetails(() => {
     connectWebSocket();
 });
 
@@ -97,7 +121,9 @@ function sendHandshake() {
                 device_id: deviceId,
                 connection_type: "usb_adb",
                 ssid: wifiSsid,
-                battery_saver_active: batterySaverActive
+                battery_saver_active: batterySaverActive,
+                api_level: apiLevel,
+                os_version: osVersion
             }
         };
         ws.send(JSON.stringify(handshake));
@@ -155,7 +181,7 @@ function execPromise(command) {
 }
 
 /**
- * Periodically audits active sensor-using applications (SensorManager & AppOps)
+ * Periodically audits active sensor-using applications (SensorManager, Camera, Audio, Location, Bluetooth)
  */
 function startTelemetryLoop() {
     if (batterySaverActive) return;
@@ -163,19 +189,16 @@ function startTelemetryLoop() {
     clearInterval(telemetryInterval);
     telemetryInterval = setInterval(async () => {
         try {
-            // Run dumpsys, AppOps, and settings queries concurrently
+            // Run system dumpsys diagnostics concurrently
             const [
-                sensorRes, micRes, camRes, 
-                fineLocRes, coarseLocRes, bleRes, 
-                bioRes, accessRes
+                sensorRes, audioRes, cameraRes, 
+                locationRes, bluetoothRes, accessRes
             ] = await Promise.all([
                 execPromise('adb shell dumpsys sensorservice'),
-                execPromise('adb shell appops query-op android:record_audio active'),
-                execPromise('adb shell appops query-op android:camera active'),
-                execPromise('adb shell appops query-op android:fine_location active'),
-                execPromise('adb shell appops query-op android:coarse_location active'),
-                execPromise('adb shell appops query-op android:bluetooth_scan active'),
-                execPromise('adb shell appops query-op android:use_biometric active'),
+                execPromise('adb shell dumpsys audio'),
+                execPromise('adb shell dumpsys media.camera'),
+                execPromise('adb shell dumpsys location'),
+                execPromise('adb shell dumpsys bluetooth_manager'),
                 execPromise('adb shell settings get secure enabled_accessibility_services')
             ]);
 
@@ -186,35 +209,27 @@ function startTelemetryLoop() {
                 activeAppPackages = activeAppPackages.concat(parseSensorServiceOutput(sensorRes.stdout));
             }
 
-            // 2. Parse Microphone recording status
-            if (!micRes.err && micRes.stdout) {
-                activeAppPackages = activeAppPackages.concat(parseAppOpsOutput(micRes.stdout, "Microphone"));
+            // 2. Parse Microphone recording status from AudioService activity logs
+            if (!audioRes.err && audioRes.stdout) {
+                activeAppPackages = activeAppPackages.concat(parseAudioOutput(audioRes.stdout));
             }
 
-            // 3. Parse Camera status
-            if (!camRes.err && camRes.stdout) {
-                activeAppPackages = activeAppPackages.concat(parseAppOpsOutput(camRes.stdout, "Camera"));
+            // 3. Parse Camera status from CameraService active client listings
+            if (!cameraRes.err && cameraRes.stdout) {
+                activeAppPackages = activeAppPackages.concat(parseCameraOutput(cameraRes.stdout));
             }
 
-            // 4. Parse Location status (GPS & Network)
-            if (!fineLocRes.err && fineLocRes.stdout) {
-                activeAppPackages = activeAppPackages.concat(parseAppOpsOutput(fineLocRes.stdout, "GPS_Location"));
-            }
-            if (!coarseLocRes.err && coarseLocRes.stdout) {
-                activeAppPackages = activeAppPackages.concat(parseAppOpsOutput(coarseLocRes.stdout, "Network_Location"));
+            // 4. Parse Location status (GPS & Network) from LocationManager records
+            if (!locationRes.err && locationRes.stdout) {
+                activeAppPackages = activeAppPackages.concat(parseLocationOutput(locationRes.stdout));
             }
 
-            // 5. Parse Bluetooth scanning
-            if (!bleRes.err && bleRes.stdout) {
-                activeAppPackages = activeAppPackages.concat(parseAppOpsOutput(bleRes.stdout, "Bluetooth_Scan"));
+            // 5. Parse Bluetooth scanning from BLE GATT scanner map
+            if (!bluetoothRes.err && bluetoothRes.stdout) {
+                activeAppPackages = activeAppPackages.concat(parseBluetoothOutput(bluetoothRes.stdout));
             }
 
-            // 6. Parse Biometric use
-            if (!bioRes.err && bioRes.stdout) {
-                activeAppPackages = activeAppPackages.concat(parseAppOpsOutput(bioRes.stdout, "Biometric_Auth"));
-            }
-
-            // 7. Parse enabled Accessibility Services
+            // 6. Parse enabled Accessibility Services
             let accessibilityPackages = [];
             if (!accessRes.err && accessRes.stdout && accessRes.stdout.trim() !== "null" && accessRes.stdout.trim() !== "") {
                 const services = accessRes.stdout.trim().split(':');
@@ -224,14 +239,15 @@ function startTelemetryLoop() {
                 });
             }
 
-            // Fallback to mock data if ALL queries failed (indicates phone is not paired/connected)
-            const allQueriesFailed = sensorRes.err && micRes.err && camRes.err && fineLocRes.err && coarseLocRes.err && bleRes.err && bioRes.err;
+            // Fallback to mock data if ALL key diagnostics failed (indicates USB device disconnected)
+            const allQueriesFailed = sensorRes.err && audioRes.err && cameraRes.err && locationRes.err && bluetoothRes.err;
             if (allQueriesFailed) {
                 activeAppPackages = getMockActiveAppSensorData();
             }
 
             activeAppPackages.forEach((appEvent) => {
                 if (ws && ws.readyState === WebSocket.OPEN && sessionRegistered) {
+                    console.log(`[→] Transmitting telemetry: App "${appEvent.package}" using sensor "${appEvent.sensor}" (${appEvent.state})`);
                     const telemetryPacket = {
                         event_type: "app_sensor_telemetry",
                         metadata: {
@@ -339,63 +355,155 @@ function parseSensorServiceOutput(stdout) {
 }
 
 /**
- * Generates mock sensor usage events for safety & testing when local ADB pairing is offline
+ * Parses dumpsys audio logs to track active microphone recording configurations
  */
-function getMockActiveAppSensorData() {
-    const now = Date.now();
-    const mockEvents = [];
-
-    // Simulate high frequency sampling (potential side channel)
-    if (now % 6 === 0) {
-        mockEvents.push({
-            package: "com.covert.keylogger.calculator",
-            uid: "10199",
-            state: "BACKGROUND",
-            sensor: "Accelerometer",
-            rate: 120, // High rate triggers threat
-            screenOff: true,
-            foregroundService: false,
-            proximityEngaged: false
-        });
-    }
-
-    // Simulate standard benign camera/microphone usage (e.g. Whatsapp call in foreground)
-    if (now % 10 === 0) {
-        mockEvents.push({
-            package: "com.whatsapp",
-            uid: "10084",
+function parseAudioOutput(stdout) {
+    const list = [];
+    const lines = stdout.split('\n');
+    const activeRecords = new Map();
+    
+    lines.forEach(line => {
+        if (line.includes('rec start')) {
+            const riidMatch = line.match(/riid:(\d+)/);
+            const pkgMatch = line.match(/pack:([\w\.]+)/);
+            const uidMatch = line.match(/uid:(\d+)/);
+            if (riidMatch && pkgMatch) {
+                activeRecords.set(riidMatch[1], {
+                    package: pkgMatch[1],
+                    uid: uidMatch ? uidMatch[1] : "unknown"
+                });
+            }
+        } else if (line.includes('rec stop')) {
+            const riidMatch = line.match(/riid:(\d+)/);
+            if (riidMatch) {
+                activeRecords.delete(riidMatch[1]);
+            }
+        }
+    });
+    
+    activeRecords.forEach((record) => {
+        list.push({
+            package: record.package,
+            uid: record.uid,
             state: "FOREGROUND",
             sensor: "Microphone",
             rate: 1,
             screenOff: false,
             foregroundService: true,
-            proximityEngaged: true // Proximity sensor active due to call
+            proximityEngaged: false
         });
-    }
-
-    return mockEvents;
+    });
+    return list;
 }
 
 /**
- * Parses Android AppOps query-op stdout to identify active recorders/cameras
+ * Parses dumpsys media.camera active clients lists to check camera lock status
  */
-function parseAppOpsOutput(stdout, sensorName) {
+function parseCameraOutput(stdout) {
+    const list = [];
+    const clientSection = stdout.match(/Active Camera Clients:\s*\n?([^]*?)(?=\n\n|\nAllowed user IDs:|\n==)/i);
+    
+    if (clientSection && clientSection[1]) {
+        const lines = clientSection[1].split('\n');
+        lines.forEach(line => {
+            const trimmed = line.trim();
+            if (trimmed !== '[]' && trimmed !== '') {
+                // Match package name, e.g. "Client: com.whatsapp (PID 12345)" or just "com.instagram.android"
+                const match = trimmed.match(/Client:\s+([\w\.]+)/) || trimmed.match(/([\w\.]+)/);
+                if (match && match[1] !== 'Client' && match[1] !== 'PID') {
+                    list.push({
+                        package: match[1],
+                        uid: "unknown",
+                        state: "FOREGROUND",
+                        sensor: "Camera",
+                        rate: 1,
+                        screenOff: false,
+                        foregroundService: true,
+                        proximityEngaged: false
+                    });
+                }
+            }
+        });
+    }
+    return list;
+}
+
+/**
+ * Parses dumpsys location records to identify active GPS/Network tracking apps
+ */
+function parseLocationOutput(stdout) {
     const list = [];
     const lines = stdout.split('\n');
+    let inActiveRecords = false;
+    let currentProvider = "Location";
+
     for (let line of lines) {
-        if (line.includes('active=true')) {
-            // Match package name: usually prefixing mode/active attributes
-            // Examples:
-            // "com.whatsapp: mode=ignore; active=true"
-            // "Package com.whatsapp: android:record_audio: mode=allow; active=true"
-            const match = line.match(/([\w\.]+)(?=:|\s+mode=|\s+active=)/) || line.match(/Package\s+([\w\.]+)/);
-            if (match) {
+        if (line.includes('Active Records by Provider:')) {
+            inActiveRecords = true;
+            continue;
+        }
+        if (inActiveRecords && (line.includes('Historical Records by Provider:') || line.includes('Last Known Locations:'))) {
+            inActiveRecords = false;
+        }
+
+        if (inActiveRecords) {
+            const providerMatch = line.match(/^(\w+):/);
+            if (providerMatch) {
+                currentProvider = providerMatch[1];
+            }
+            
+            // Match pattern: UpdateRecord[passive android(1000 foreground) Request[...]]
+            const recordMatch = line.match(/UpdateRecord\[\w+\s+([\w\.]+)\((\d+)\s+(\w+)\)/);
+            if (recordMatch) {
+                const pkgName = recordMatch[1];
+                const uid = recordMatch[2];
+                const appState = recordMatch[3].toUpperCase();
+                
+                // Skip system packages
+                if (pkgName !== 'android' && pkgName !== 'system') {
+                    list.push({
+                        package: pkgName,
+                        uid: uid,
+                        state: appState === 'FOREGROUND' ? 'FOREGROUND' : 'BACKGROUND',
+                        sensor: currentProvider === 'gps' ? 'GPS_Location' : 'Network_Location',
+                        rate: 1,
+                        screenOff: appState === 'BACKGROUND',
+                        foregroundService: true,
+                        proximityEngaged: false
+                    });
+                }
+            }
+        }
+    }
+    return list;
+}
+
+/**
+ * Parses dumpsys bluetooth_manager active scans list
+ */
+function parseBluetoothOutput(stdout) {
+    const list = [];
+    const lines = stdout.split('\n');
+    let inScannerMap = false;
+
+    for (let line of lines) {
+        if (line.includes('GATT Scanner Map')) {
+            inScannerMap = true;
+            continue;
+        }
+        if (inScannerMap && line.trim() === '') {
+            inScannerMap = false;
+        }
+
+        if (inScannerMap) {
+            const match = line.match(/([\w\.]+)(?=\s+\(|:)/);
+            if (match && match[1] !== 'Client' && match[1] !== 'App') {
                 list.push({
                     package: match[1],
                     uid: "unknown",
-                    state: "FOREGROUND", // active indicates it is actively running/recording
-                    sensor: sensorName,
-                    rate: 1, // unit frequency for events
+                    state: "FOREGROUND",
+                    sensor: "Bluetooth_Scan",
+                    rate: 1,
                     screenOff: false,
                     foregroundService: true,
                     proximityEngaged: false

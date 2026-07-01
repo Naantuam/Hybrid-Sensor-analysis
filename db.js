@@ -33,8 +33,23 @@ async function initDatabase() {
                 connection_type VARCHAR(20),
                 ssid VARCHAR(100),
                 battery_saver_active BOOLEAN DEFAULT FALSE,
-                connected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                api_level INT,
+                os_version VARCHAR(20),
+                connected_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             );
+        `);
+
+        // Migration: Ensure connected_at column uses TIMESTAMPTZ if table already existed
+        await client.query(`
+            ALTER TABLE sessions ALTER COLUMN connected_at TYPE TIMESTAMPTZ;
+        `);
+        
+        // Migration: Ensure api_level and os_version columns exist
+        await client.query(`
+            ALTER TABLE sessions ADD COLUMN IF NOT EXISTS api_level INT;
+        `);
+        await client.query(`
+            ALTER TABLE sessions ADD COLUMN IF NOT EXISTS os_version VARCHAR(20);
         `);
 
         // 2. App Sensor Usage Events table
@@ -76,14 +91,14 @@ async function initDatabase() {
 /**
  * Saves a new device connection session
  */
-async function saveSession(device_id, ip_address, connection_type, ssid, battery_saver_active) {
+async function saveSession(device_id, ip_address, connection_type, ssid, battery_saver_active, api_level = null, os_version = null) {
     if (!connectionString) return null;
     const query = `
-        INSERT INTO sessions (device_id, ip_address, connection_type, ssid, battery_saver_active)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO sessions (device_id, ip_address, connection_type, ssid, battery_saver_active, api_level, os_version)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING id;
     `;
-    const res = await pool.query(query, [device_id, ip_address, connection_type, ssid, battery_saver_active]);
+    const res = await pool.query(query, [device_id, ip_address, connection_type, ssid, battery_saver_active, api_level, os_version]);
     return res.rows[0].id;
 }
 
