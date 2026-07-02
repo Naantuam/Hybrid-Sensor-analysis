@@ -93,13 +93,57 @@ async function initDatabase() {
  */
 async function saveSession(device_id, ip_address, connection_type, ssid, battery_saver_active, api_level = null, os_version = null) {
     if (!connectionString) return null;
-    const query = `
-        INSERT INTO sessions (device_id, ip_address, connection_type, ssid, battery_saver_active, api_level, os_version)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
-        RETURNING id;
+    
+    // Check if a session already exists for this device_id
+    const checkQuery = `
+        SELECT id FROM sessions 
+        WHERE device_id = $1 
+        LIMIT 1;
     `;
-    const res = await pool.query(query, [device_id, ip_address, connection_type, ssid, battery_saver_active, api_level, os_version]);
-    return res.rows[0].id;
+    const checkRes = await pool.query(checkQuery, [device_id]);
+    
+    if (checkRes.rows.length > 0) {
+        const existingId = checkRes.rows[0].id;
+        // Update the existing session row with current parameters
+        const updateQuery = `
+            UPDATE sessions 
+            SET ip_address = $1, 
+                connection_type = $2, 
+                ssid = $3, 
+                battery_saver_active = $4, 
+                api_level = COALESCE($5, api_level), 
+                os_version = COALESCE($6, os_version),
+                connected_at = CURRENT_TIMESTAMP
+            WHERE id = $7;
+        `;
+        await pool.query(updateQuery, [
+            ip_address, 
+            connection_type, 
+            ssid, 
+            battery_saver_active, 
+            api_level, 
+            os_version, 
+            existingId
+        ]);
+        return existingId;
+    } else {
+        // Create a new session row
+        const insertQuery = `
+            INSERT INTO sessions (device_id, ip_address, connection_type, ssid, battery_saver_active, api_level, os_version)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            RETURNING id;
+        `;
+        const insertRes = await pool.query(insertQuery, [
+            device_id, 
+            ip_address, 
+            connection_type, 
+            ssid, 
+            battery_saver_active, 
+            api_level, 
+            os_version
+        ]);
+        return insertRes.rows[0].id;
+    }
 }
 
 /**

@@ -2,6 +2,10 @@ const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
 const cors = require('cors');
+const os = require('os');
+const path = require('path');
+const fs = require('fs');
+const qrcode = require('qrcode-terminal');
 const { 
     initDatabase, 
     saveSession, 
@@ -276,12 +280,91 @@ app.get('/api/sessions/:id/events', async (req, res) => {
     }
 });
 
+// Helper to retrieve Kali / Host Machine Local IP Address
+function getLocalIpAddress() {
+    const interfaces = os.networkInterfaces();
+    for (const name of Object.keys(interfaces)) {
+        for (const iface of interfaces[name]) {
+            if (iface.family === 'IPv4' && !iface.internal) {
+                return iface.address;
+            }
+        }
+    }
+    return '127.0.0.1';
+}
+
+// 4. Offline Provisioning & Bootstrapping Endpoints
+app.get('/bootstrap', (req, res) => {
+    const localIp = getLocalIpAddress();
+    const port = server.address().port || 4444;
+    const bootstrapScript = `#!/usr/bin/env bash
+echo "================================================="
+echo "   Bootstrapping Hybrid Sensor Telemetry Agent   "
+echo "================================================="
+echo "[*] Target Host IP: ${localIp}"
+echo "[*] Setting up workspace directory at ~/hybrid-agent..."
+mkdir -p ~/hybrid-agent
+cd ~/hybrid-agent
+
+echo "[*] Downloading mobile-side agent components..."
+curl -s -o sensor_agent.js http://${localIp}:${port}/download/sensor_agent.js
+curl -s -o start_agent.sh http://${localIp}:${port}/download/start_agent.sh
+curl -s -o stop_agent.sh http://${localIp}:${port}/download/stop_agent.sh
+curl -s -o setup.sh http://${localIp}:${port}/download/setup.sh
+
+chmod +x start_agent.sh stop_agent.sh setup.sh
+echo "[+] Mobile agent packages successfully downloaded."
+echo "[*] Triggering interactive installer..."
+bash setup.sh
+`;
+    res.setHeader('Content-Type', 'text/plain');
+    res.send(bootstrapScript);
+});
+
+app.get('/download/sensor_agent.js', (req, res) => {
+    res.sendFile(path.join(__dirname, 'agent', 'sensor_agent.js'));
+});
+
+app.get('/download/stop_agent.sh', (req, res) => {
+    res.sendFile(path.join(__dirname, 'agent', 'stop_agent.sh'));
+});
+
+app.get('/download/setup.sh', (req, res) => {
+    res.sendFile(path.join(__dirname, 'agent', 'setup.sh'));
+});
+
+app.get('/download/start_agent.sh', (req, res) => {
+    const localIp = getLocalIpAddress();
+    const port = server.address().port || 4444;
+    const filePath = path.join(__dirname, 'agent', 'start_agent.sh');
+    
+    fs.readFile(filePath, 'utf8', (err, data) => {
+        if (err) return res.status(500).send('Error loading template');
+        // Replace default LOCAL_ENDPOINT with the dynamic local IP of this server
+        const modified = data.replace(
+            /LOCAL_ENDPOINT=\$\{1:-"[^"]*"\}/,
+            `LOCAL_ENDPOINT=\${1:-"ws://${localIp}:${port}"}`
+        );
+        res.setHeader('Content-Type', 'text/plain');
+        res.send(modified);
+    });
+});
+
 // Start the Edge Server
 const PORT = process.env.PORT || 4444;
 server.listen(PORT, '0.0.0.0', () => {
+    const localIp = getLocalIpAddress();
+    const bootstrapUrl = `http://${localIp}:${PORT}/bootstrap`;
+
     console.log(`=================================================`);
     console.log(`[x] Hybrid Edge-Analysis Server Online`);
     console.log(`[x] Listening on Port ${PORT}`);
     console.log(`[x] Connected to database: ${process.env.DATABASE_URL ? 'Neon Postgres' : 'None (Mock Mode)'}`);
+    console.log(`=================================================`);
+    console.log(`[*] LOCAL OFFLINE PROVISIONING FOR MOBILE DEVICES`);
+    console.log(`[*] Scan this QR code in Termux (or run: curl -s ${bootstrapUrl} | bash) to setup the phone:`);
+    console.log(`URL: ${bootstrapUrl}`);
+    console.log(`=================================================`);
+    qrcode.generate(bootstrapUrl, { small: true });
     console.log(`=================================================`);
 });

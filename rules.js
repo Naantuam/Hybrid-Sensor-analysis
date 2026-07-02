@@ -11,7 +11,7 @@ const RULES = {
     COLLECTION_CAMERA: { id: "COLLECTION_CAMERA", points: 20, description: "Camera active", tactic: "Collection", mitre: "T1125" },
 
     // 2. Tactic: Context State (Access permissions and OS context)
-    STATE_FOREGROUND: { id: "STATE_FOREGROUND", points: 5, description: "Hardware access in foreground (Authorized)", tactic: "Context" },
+    STATE_FOREGROUND: { id: "STATE_FOREGROUND", points: 0, description: "Hardware access in foreground (Authorized)", tactic: "Context" },
     STATE_BACKGROUND: { id: "STATE_BACKGROUND", points: 25, description: "Hardware access in background (High Risk)", tactic: "Context" },
     STATE_SCREEN_OFF: { id: "STATE_SCREEN_OFF", points: 30, description: "Sensor telemetry streams while device display is OFF", tactic: "Context" },
     CONTEXT_BG_VIOLATION: { id: "CONTEXT_BG_VIOLATION", points: 50, description: "Critical: High-Value Target accessed in background", tactic: "Context" },
@@ -27,7 +27,7 @@ const RULES = {
 
     // 5. Tactic: Defense Evasion
     EVASION_LOG_DELETE: { id: "EVASION_LOG_DELETE", points: 30, description: "Indicator removal on host (log/file deletion)", tactic: "Defense Evasion", mitre: "T1403" },
-    EVASION_ACCESSIBILITY: { id: "EVASION_ACCESSIBILITY", points: 30, description: "Accessibility Services active for non-system packages", tactic: "Defense Evasion", mitre: "T1406" },
+    EVASION_ACCESSIBILITY: { id: "EVASION_ACCESSIBILITY", points: 15, description: "Accessibility Services active for non-system packages", tactic: "Defense Evasion", mitre: "T1406" },
     EVASION_BIOMETRIC: { id: "EVASION_BIOMETRIC", points: 10, description: "Biometric authentication bypass/abuse", tactic: "Defense Evasion", mitre: "T1406" }
 };
 
@@ -151,8 +151,9 @@ function evaluatePacket(packet, systemContext = {}) {
 
     // Final Threat Level Calculation
     let threatLevel = "BENIGN";
-    if (totalScore > 50) threatLevel = "CRITICAL";
-    else if (totalScore > 20) threatLevel = "SUSPICIOUS";
+    if (totalScore > 75) threatLevel = "CRITICAL";
+    else if (totalScore > 50) threatLevel = "HIGH";
+    else if (totalScore > 35) threatLevel = "SUSPICIOUS";
 
     return {
         totalScore: Math.max(0, totalScore),

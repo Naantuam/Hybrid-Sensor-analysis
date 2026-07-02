@@ -21,6 +21,7 @@
             /* Status Colors */
             --color-benign: #10b981;
             --color-suspicious: #f59e0b;
+            --color-high: #f97316;
             --color-critical: #ef4444;
             --color-glow-critical: rgba(239, 68, 68, 0.25);
             
@@ -387,6 +388,12 @@
             border: 1px solid rgba(245, 158, 11, 0.3);
         }
 
+        .badge-high {
+            background: rgba(249, 115, 22, 0.12);
+            color: var(--color-high);
+            border: 1px solid rgba(249, 115, 22, 0.3);
+        }
+
         .badge-critical {
             background: rgba(239, 68, 68, 0.12);
             color: var(--color-critical);
@@ -678,6 +685,7 @@
                     // Format threat badge
                     let badgeClass = 'badge-benign';
                     if (alert.threat_level === 'SUSPICIOUS') badgeClass = 'badge-suspicious';
+                    if (alert.threat_level === 'HIGH') badgeClass = 'badge-high';
                     if (alert.threat_level === 'CRITICAL') badgeClass = 'badge-critical';
                     
                     // Format triggered rules
@@ -787,6 +795,7 @@
             
             let color = 'var(--color-benign)';
             if (tag === 'SUSPICIOUS') color = 'var(--color-suspicious)';
+            if (tag === 'HIGH') color = 'var(--color-high)';
             if (tag === 'CRITICAL') color = 'var(--color-critical)';
             if (tag === 'System') color = 'var(--text-muted)';
 
