@@ -16,6 +16,7 @@ let batteryInterval = null;
 
 let apiLevel = 29;
 let osVersion = "Unknown";
+let isAdbBridge = false;
 
 console.log(`[*] Target Local Endpoint: ${LOCAL_URL}`);
 console.log(`[*] Target Cloud Endpoint: ${CLOUD_URL}`);
@@ -23,8 +24,8 @@ console.log(`[*] Target Cloud Endpoint: ${CLOUD_URL}`);
 // Initialize Device ID and build attributes dynamically (handles PC adb & local Termux)
 function detectDeviceDetails(callback) {
     exec('adb shell getprop ro.product.model', (errModel, stdoutModel) => {
-        const isAdb = !errModel && stdoutModel.trim() !== "";
-        const propCmd = isAdb ? 'adb shell getprop' : 'getprop';
+        isAdbBridge = !errModel && stdoutModel.trim() !== "";
+        const propCmd = isAdbBridge ? 'adb shell getprop' : 'getprop';
 
         exec(`${propCmd} ro.product.model`, (err, stdout) => {
             if (!err && stdout.trim()) {
@@ -38,7 +39,7 @@ function detectDeviceDetails(callback) {
                     if (!errRel && stdoutRel.trim()) {
                         osVersion = stdoutRel.trim();
                     }
-                    console.log(`[+] Detected OS: Android ${osVersion} (API Level ${apiLevel}) [Bridge: ${isAdb ? 'USB adb' : 'Local termux'}]`);
+                    console.log(`[+] Detected OS: Android ${osVersion} (API Level ${apiLevel}) [Bridge: ${isAdbBridge ? 'USB adb' : 'Local termux'}]`);
                     callback();
                 });
             });
@@ -181,6 +182,35 @@ function execPromise(command) {
 }
 
 /**
+ * Runs a command on the device (prefixes with adb shell if in ADB bridge mode)
+ */
+function runDeviceCmd(command) {
+    const prefix = isAdbBridge ? 'adb shell ' : '';
+    return execPromise(prefix + command);
+}
+
+/**
+ * Parses mInteractive state from dumpsys power to verify true display status
+ */
+function parseScreenState(powerStdout) {
+    if (!powerStdout) return true;
+    
+    // Check mInteractive state (standard in Android 5.0+)
+    if (powerStdout.includes('mInteractive=false')) return false;
+    if (powerStdout.includes('mInteractive=true')) return true;
+    
+    // Check Display Power State
+    if (powerStdout.includes('Display Power: state=OFF')) return false;
+    if (powerStdout.includes('Display Power: state=ON')) return true;
+    
+    // Check mScreenOn (older Android versions)
+    if (powerStdout.includes('mScreenOn=false')) return false;
+    if (powerStdout.includes('mScreenOn=true')) return true;
+
+    return true; // Default fallback to ON
+}
+
+/**
  * Periodically audits active sensor-using applications (SensorManager, Camera, Audio, Location, Bluetooth)
  */
 function startTelemetryLoop() {
@@ -192,14 +222,16 @@ function startTelemetryLoop() {
             // Run system dumpsys diagnostics concurrently
             const [
                 sensorRes, audioRes, cameraRes,
-                locationRes, bluetoothRes, accessRes
+                locationRes, bluetoothRes, accessRes,
+                powerRes
             ] = await Promise.all([
-                execPromise('adb shell dumpsys sensorservice'),
-                execPromise('adb shell dumpsys audio'),
-                execPromise('adb shell dumpsys media.camera'),
-                execPromise('adb shell dumpsys location'),
-                execPromise('adb shell dumpsys bluetooth_manager'),
-                execPromise('adb shell settings get secure enabled_accessibility_services')
+                runDeviceCmd('dumpsys sensorservice'),
+                runDeviceCmd('dumpsys audio'),
+                runDeviceCmd('dumpsys media.camera'),
+                runDeviceCmd('dumpsys location'),
+                runDeviceCmd('dumpsys bluetooth_manager'),
+                runDeviceCmd('settings get secure enabled_accessibility_services'),
+                runDeviceCmd('dumpsys power')
             ]);
 
             let activeAppPackages = [];
@@ -245,6 +277,8 @@ function startTelemetryLoop() {
                 activeAppPackages = getMockActiveAppSensorData();
             }
 
+            const isDisplayOn = !powerRes.err ? parseScreenState(powerRes.stdout) : true;
+
             activeAppPackages.forEach((appEvent) => {
                 if (ws && ws.readyState === WebSocket.OPEN && sessionRegistered) {
                     const telemetryPacket = {
@@ -259,7 +293,7 @@ function startTelemetryLoop() {
                             sensor_name: appEvent.sensor,
                             polling_rate_hz: appEvent.rate,
                             metadata: {
-                                screen_state: appEvent.screenOff ? "OFF" : "ON",
+                                screen_state: isDisplayOn ? "ON" : "OFF",
                                 has_foreground_service: appEvent.foregroundService,
                                 enabled_accessibility_services: accessibilityPackages
                             },

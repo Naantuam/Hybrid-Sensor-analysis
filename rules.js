@@ -28,7 +28,8 @@ const RULES = {
     // 5. Tactic: Defense Evasion
     EVASION_LOG_DELETE: { id: "EVASION_LOG_DELETE", points: 30, description: "Indicator removal on host (log/file deletion)", tactic: "Defense Evasion", mitre: "T1403" },
     EVASION_ACCESSIBILITY: { id: "EVASION_ACCESSIBILITY", points: 15, description: "Accessibility Services active for non-system packages", tactic: "Defense Evasion", mitre: "T1406" },
-    EVASION_BIOMETRIC: { id: "EVASION_BIOMETRIC", points: 10, description: "Biometric authentication bypass/abuse", tactic: "Defense Evasion", mitre: "T1406" }
+    EVASION_BIOMETRIC: { id: "EVASION_BIOMETRIC", points: 10, description: "Biometric authentication bypass/abuse", tactic: "Defense Evasion", mitre: "T1406" },
+    EVASION_STATE_DISCREPANCY: { id: "EVASION_STATE_DISCREPANCY", points: 20, description: "Evasion: App-declared state (Foreground) mismatches physical display status (OFF)", tactic: "Defense Evasion", mitre: "T1036" }
 };
 
 /**
@@ -125,6 +126,12 @@ function evaluatePacket(packet, systemContext = {}) {
     if (hvtTriggered && (metadata.app_state === "BACKGROUND" || metadata.screen_state === "OFF")) {
         totalScore += RULES.CONTEXT_BG_VIOLATION.points;
         triggeredRules.push(RULES.CONTEXT_BG_VIOLATION);
+    }
+
+    // 7. Context Modifier: State Evasion Discrepancy (Evasion of background limits)
+    if (metadata.app_state === "FOREGROUND" && metadata.screen_state === "OFF") {
+        totalScore += RULES.EVASION_STATE_DISCREPANCY.points;
+        triggeredRules.push(RULES.EVASION_STATE_DISCREPANCY);
     }
 
     // --- Phase 2: Intent Filtering (Exemptions) ---

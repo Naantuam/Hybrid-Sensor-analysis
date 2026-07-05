@@ -22,7 +22,8 @@ const { evaluatePacket } = require('./rules');
 // Initialize the Web Server
 const app = express();
 app.use(cors());
-app.use(express.static('public'));
+app.use(express.static(path.join(__dirname, 'dist')));
+app.use(express.static(path.join(__dirname, 'public')));
 
 // Create an HTTP server attached to Express
 const server = http.createServer(app);
@@ -189,6 +190,14 @@ wss.on('connection', (ws, req) => {
                         evaluation.triggeredRules,
                         evaluation.modifiersApplied,
                         app_package,
+                        {
+                            sensor_name,
+                            app_state,
+                            screen_state: rulesInputPacket.metadata.screen_state,
+                            polling_rate_hz: rulesInputPacket.payload.motion_freq || rulesInputPacket.payload.light_freq || 0,
+                            has_foreground_service: rulesInputPacket.metadata.has_foreground_service,
+                            accessibility_warnings: rulesInputPacket.metadata.accessibility_warnings
+                        },
                         timestamp
                     );
 
@@ -207,7 +216,15 @@ wss.on('connection', (ws, req) => {
                             score: evaluation.totalScore,
                             threat_level: evaluation.threatLevel,
                             triggered_rules: evaluation.triggeredRules,
-                            modifiers: evaluation.modifiersApplied
+                            modifiers: evaluation.modifiersApplied,
+                            observed_telemetry: {
+                                sensor_name,
+                                app_state,
+                                screen_state: rulesInputPacket.metadata.screen_state,
+                                polling_rate_hz: rulesInputPacket.payload.motion_freq || rulesInputPacket.payload.light_freq || 0,
+                                has_foreground_service: rulesInputPacket.metadata.has_foreground_service,
+                                accessibility_warnings: rulesInputPacket.metadata.accessibility_warnings
+                            }
                         }
                     };
 

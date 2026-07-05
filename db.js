@@ -80,6 +80,11 @@ async function initDatabase() {
             );
         `);
         
+        await client.query(`
+            ALTER TABLE threat_alerts 
+            ADD COLUMN IF NOT EXISTS observed_telemetry JSONB;
+        `);
+        
         console.log('[+] Neon Database initialized successfully.');
     } catch (err) {
         console.error('[!] Error initializing database:', err.message);
@@ -174,11 +179,11 @@ async function saveSensorEvent(sessionId, app_package, app_uid, app_state, senso
 /**
  * Saves a threat alert evaluated by the rule engine
  */
-async function saveThreatAlert(sessionId, threat_level, score, triggered_rules, modifiers, app_package, timestamp) {
+async function saveThreatAlert(sessionId, threat_level, score, triggered_rules, modifiers, app_package, observed_telemetry, timestamp) {
     if (!connectionString) return;
     const query = `
-        INSERT INTO threat_alerts (session_id, threat_level, score, triggered_rules, modifiers, app_package, timestamp)
-        VALUES ($1, $2, $3, $4, $5, $6, $7);
+        INSERT INTO threat_alerts (session_id, threat_level, score, triggered_rules, modifiers, app_package, observed_telemetry, timestamp)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
     `;
     await pool.query(query, [
         sessionId, 
@@ -187,6 +192,7 @@ async function saveThreatAlert(sessionId, threat_level, score, triggered_rules, 
         JSON.stringify(triggered_rules), 
         JSON.stringify(modifiers), 
         app_package, 
+        JSON.stringify(observed_telemetry),
         timestamp
     ]);
 }
