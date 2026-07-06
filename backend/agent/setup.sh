@@ -18,6 +18,7 @@ pkg install nodejs-lts termux-api coreutils -y
 echo "[*] Restructuring workspace..."
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 mkdir -p ~/hybrid-agent
+cp "$SCRIPT_DIR/commands.js" ~/hybrid-agent/
 cp "$SCRIPT_DIR/sensor_agent.js" ~/hybrid-agent/
 cp "$SCRIPT_DIR/start_agent.sh" ~/hybrid-agent/
 cp "$SCRIPT_DIR/stop_agent.sh" ~/hybrid-agent/

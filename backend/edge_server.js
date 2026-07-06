@@ -22,8 +22,8 @@ const { evaluatePacket } = require('./rules');
 // Initialize the Web Server
 const app = express();
 app.use(cors());
-app.use(express.static(path.join(__dirname, 'dist')));
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, '..', 'dist')));
+app.use(express.static(path.join(__dirname, '..', 'public')));
 
 // Create an HTTP server attached to Express
 const server = http.createServer(app);
@@ -324,6 +324,7 @@ mkdir -p ~/hybrid-agent
 cd ~/hybrid-agent
 
 echo "[*] Downloading mobile-side agent components..."
+curl -s -o commands.js http://${localIp}:${port}/download/commands.js
 curl -s -o sensor_agent.js http://${localIp}:${port}/download/sensor_agent.js
 curl -s -o start_agent.sh http://${localIp}:${port}/download/start_agent.sh
 curl -s -o stop_agent.sh http://${localIp}:${port}/download/stop_agent.sh
@@ -336,6 +337,10 @@ bash setup.sh
 `;
     res.setHeader('Content-Type', 'text/plain');
     res.send(bootstrapScript);
+});
+
+app.get('/download/commands.js', (req, res) => {
+    res.sendFile(path.join(__dirname, 'agent', 'commands.js'));
 });
 
 app.get('/download/sensor_agent.js', (req, res) => {

@@ -2,9 +2,9 @@
   "name": "hybrid-sensor-analysis",
   "version": "1.0.0",
   "description": "Hybrid Sensor Monitoring and Threat Analysis Framework",
-  "main": "edge_server.js",
+  "main": "backend/edge_server.js",
   "scripts": {
-    "start": "node edge_server.js",
+    "start": "node backend/edge_server.js",
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview"
