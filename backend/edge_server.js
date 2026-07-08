@@ -5,6 +5,7 @@ const cors = require('cors');
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
+const { exec } = require('child_process');
 const qrcode = require('qrcode-terminal');
 const { 
     initDatabase, 
@@ -257,6 +258,75 @@ app.get('/api/health', (req, res) => {
     });
 });
 
+// Server info metadata for onboarding
+app.get('/api/info', (req, res) => {
+    const localIp = getLocalIpAddress();
+    const port = server.address() ? (server.address().port || PORT) : PORT;
+    res.json({
+        localIp,
+        port,
+        bootstrapUrl: `http://${localIp}:${port}/bootstrap`
+    });
+});
+
+// Run adb commands safely helper
+const runAdbCommand = (command) => {
+    return new Promise((resolve) => {
+        exec(command, (err, stdout) => {
+            if (err) resolve('');
+            else resolve(stdout.trim());
+        });
+    });
+};
+
+// USB Auto-detect endpoint
+app.get('/api/usb-detect', async (req, res) => {
+    try {
+        exec('adb devices', async (err, stdout) => {
+            if (err) {
+                return res.json({ status: "error", message: "ADB not available", devices: [] });
+            }
+            
+            const lines = stdout.split('\n');
+            const devices = [];
+            
+            for (let line of lines) {
+                const parts = line.trim().split(/\s+/);
+                if (parts.length === 2 && parts[1] === 'device') {
+                    const serial = parts[0];
+                    
+                    const [model, version, sdk, abi] = await Promise.all([
+                        runAdbCommand(`adb -s ${serial} shell getprop ro.product.model`),
+                        runAdbCommand(`adb -s ${serial} shell getprop ro.build.version.release`),
+                        runAdbCommand(`adb -s ${serial} shell getprop ro.build.version.sdk`),
+                        runAdbCommand(`adb -s ${serial} shell getprop ro.product.cpu.abi`)
+                    ]);
+                    
+                    let profile = "modern";
+                    if (abi && abi.includes("x86")) {
+                        profile = "x86_64";
+                    } else if (version && parseInt(version) < 10) {
+                        profile = "legacy";
+                    }
+                    
+                    devices.push({
+                        serial,
+                        model: model || "Unknown Device",
+                        androidVersion: version || "Unknown",
+                        sdkLevel: sdk || "Unknown",
+                        abi: abi || "Unknown",
+                        profile
+                    });
+                }
+            }
+            
+            res.json({ status: "success", devices });
+        });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // Get all sessions
 app.get('/api/sessions', async (req, res) => {
     try {
@@ -313,8 +383,34 @@ function getLocalIpAddress() {
 // 4. Offline Provisioning & Bootstrapping Endpoints
 app.get('/bootstrap', (req, res) => {
     const localIp = getLocalIpAddress();
-    const port = server.address().port || 4444;
-    const bootstrapScript = `#!/usr/bin/env bash
+    const port = server.address ? (server.address().port || PORT) : PORT;
+    const profile = req.query.profile || '';
+
+    let bootstrapScript = '';
+
+    if (profile) {
+        bootstrapScript = `#!/usr/bin/env bash
+echo "================================================="
+echo "   Restoring Prepared Termux Environment         "
+echo "   Profile: ${profile}                           "
+echo "================================================="
+echo "[*] Target Host IP: ${localIp}"
+echo "[*] Downloading backup archive..."
+curl -o termux-backup.tar.gz http://${localIp}:${port}/download/termux-backup-${profile}.tar.gz
+
+echo "[*] Unpacking environment snapshot to Termux files..."
+tar -zxf termux-backup.tar.gz -C /data/data/com.termux/files --recursive-unlink --preserve-permissions
+
+echo "[*] Cleaning up temporary archive..."
+rm termux-backup.tar.gz
+
+echo "================================================="
+echo "[+] Environment successfully restored!"
+echo "[*] Start the agent using: cd ~/hybrid-agent && bash start_agent.sh"
+echo "================================================="
+`;
+    } else {
+        bootstrapScript = `#!/usr/bin/env bash
 echo "================================================="
 echo "   Bootstrapping Hybrid Sensor Telemetry Agent   "
 echo "================================================="
@@ -335,8 +431,20 @@ echo "[+] Mobile agent packages successfully downloaded."
 echo "[*] Triggering interactive installer..."
 bash setup.sh
 `;
+    }
+
     res.setHeader('Content-Type', 'text/plain');
     res.send(bootstrapScript);
+});
+
+app.get('/download/termux-backup-:profile.tar.gz', (req, res) => {
+    const profile = req.params.profile;
+    const backupPath = path.join(__dirname, 'agent', `termux-backup-${profile}.tar.gz`);
+    if (fs.existsSync(backupPath)) {
+        res.sendFile(backupPath);
+    } else {
+        res.status(404).send(`Backup package for profile "${profile}" not found on server. Please copy the backup file to backend/agent/termux-backup-${profile}.tar.gz`);
+    }
 });
 
 app.get('/download/commands.js', (req, res) => {
