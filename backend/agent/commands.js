@@ -106,8 +106,19 @@ const commands = {
             const list = [];
             const lines = stdout.split('\n');
             const activeRecords = new Map();
+            let inRecordMonitorSection = false;
 
             lines.forEach(line => {
+                const trimmed = line.trim();
+                
+                // Track if we are inside RecordActivityMonitor dump section to parse current configurations
+                if (trimmed.includes('RecordActivityMonitor dump') || trimmed.includes('Recording activity clients:')) {
+                    inRecordMonitorSection = true;
+                }
+                if (inRecordMonitorSection && (trimmed.startsWith('AudioEventLogger') || trimmed.startsWith('PlaybackActivityMonitor') || trimmed.startsWith('RoutingService'))) {
+                    inRecordMonitorSection = false;
+                }
+
                 if (line.includes('rec start')) {
                     const riidMatch = line.match(/riid:(\d+)/);
                     const pkgMatch = line.match(/pack:([\w\.]+)/);
@@ -122,6 +133,19 @@ const commands = {
                     const riidMatch = line.match(/riid:(\d+)/);
                     if (riidMatch) {
                         activeRecords.delete(riidMatch[1]);
+                    }
+                } else if (inRecordMonitorSection) {
+                    // Match current active config dump lines (e.g. session:123 -- client:com.whatsapp -- uid:10123)
+                    const configMatch = line.match(/client:([\w\.]+)\s+--\s+uid:(\d+)/) || 
+                                         line.match(/pack:([\w\.]+)\s+--\s+uid:(\d+)/) ||
+                                         line.match(/pack:([\w\.]+).*?uid:(\d+)/);
+                    if (configMatch) {
+                        const pkgName = configMatch[1];
+                        const uid = configMatch[2];
+                        activeRecords.set("direct_" + pkgName + "_" + uid, {
+                            package: pkgName,
+                            uid: uid
+                        });
                     }
                 }
             });
@@ -196,11 +220,11 @@ const commands = {
                         currentProvider = providerMatch[1];
                     }
 
-                    const recordMatch = line.match(/UpdateRecord\[\w+\s+([\w\.]+)\((\d+)\s+(\w+)\)/);
+                    const recordMatch = line.match(/UpdateRecord\[\w+\s+([\w\.]+)\((\d+)(?:\s+(\w+))?\)/);
                     if (recordMatch) {
                         const pkgName = recordMatch[1];
                         const uid = recordMatch[2];
-                        const appState = recordMatch[3].toUpperCase();
+                        const appState = recordMatch[3] ? recordMatch[3].toUpperCase() : 'FOREGROUND';
 
                         if (pkgName !== 'android' && pkgName !== 'system') {
                             list.push({

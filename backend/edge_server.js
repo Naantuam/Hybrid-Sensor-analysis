@@ -5,7 +5,7 @@ const cors = require('cors');
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
-const { exec } = require('child_process');
+const { exec, spawn } = require('child_process');
 const qrcode = require('qrcode-terminal');
 const { 
     initDatabase, 
@@ -23,6 +23,7 @@ const { evaluatePacket } = require('./rules');
 // Initialize the Web Server
 const app = express();
 app.use(cors());
+app.use(express.json());
 app.use(express.static(path.join(__dirname, '..', 'dist')));
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
@@ -415,16 +416,35 @@ echo "================================================="
 echo "   Bootstrapping Hybrid Sensor Telemetry Agent   "
 echo "================================================="
 echo "[*] Target Host IP: ${localIp}"
+
+# Detect Android API Level locally on device
+API_LEVEL=$(getprop ro.build.version.sdk)
+echo "[*] Detected Android API Level: \${API_LEVEL}"
+
 echo "[*] Setting up workspace directory at ~/hybrid-agent..."
 mkdir -p ~/hybrid-agent
 cd ~/hybrid-agent
 
+# Try to restore preconfigured environment first
+echo "[*] Auditing for preconfigured Termux backup (API \${API_LEVEL})..."
+STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://${localIp}:${port}/download/termux-backup-\${API_LEVEL}.tar.gz")
+if [ "\$STATUS_CODE" -eq 200 ]; then
+    echo "[+] Found preconfigured Termux snapshot! Downloading environment..."
+    curl -o termux-backup.tar.gz "http://${localIp}:${port}/download/termux-backup-\${API_LEVEL}.tar.gz"
+    echo "[*] Unpacking backup to Termux root directory..."
+    tar -zxf termux-backup.tar.gz -C /data/data/com.termux/files --recursive-unlink --preserve-permissions
+    rm termux-backup.tar.gz
+    echo "[+] Termux environment successfully restored!"
+else
+    echo "[-] No preconfigured Termux snapshot found for API \${API_LEVEL}. Proceeding with standard setup..."
+fi
+
 echo "[*] Downloading mobile-side agent components..."
-curl -s -o commands.js http://${localIp}:${port}/download/commands.js
-curl -s -o sensor_agent.js http://${localIp}:${port}/download/sensor_agent.js
-curl -s -o start_agent.sh http://${localIp}:${port}/download/start_agent.sh
-curl -s -o stop_agent.sh http://${localIp}:${port}/download/stop_agent.sh
-curl -s -o setup.sh http://${localIp}:${port}/download/setup.sh
+curl -s -o commands.js "http://${localIp}:${port}/download/commands.js?api=\${API_LEVEL}"
+curl -s -o sensor_agent.js "http://${localIp}:${port}/download/sensor_agent.js?api=\${API_LEVEL}"
+curl -s -o start_agent.sh "http://${localIp}:${port}/download/start_agent.sh?api=\${API_LEVEL}"
+curl -s -o stop_agent.sh "http://${localIp}:${port}/download/stop_agent.sh?api=\${API_LEVEL}"
+curl -s -o setup.sh "http://${localIp}:${port}/download/setup.sh?api=\${API_LEVEL}"
 
 chmod +x start_agent.sh stop_agent.sh setup.sh
 echo "[+] Mobile agent packages successfully downloaded."
@@ -478,6 +498,71 @@ app.get('/download/start_agent.sh', (req, res) => {
         res.setHeader('Content-Type', 'text/plain');
         res.send(modified);
     });
+});
+
+// Track running host-side ADB agent processes keyed by device serial
+const runningAgents = new Map();
+
+// POST /api/agent/start - starts agent for a device serial
+app.post('/api/agent/start', (req, res) => {
+    const { serial } = req.body;
+    if (!serial) {
+        return res.status(400).json({ status: "error", message: "Device serial is required" });
+    }
+
+    if (runningAgents.has(serial)) {
+        return res.json({ status: "success", message: "Agent is already running for this device" });
+    }
+
+    const localIp = getLocalIpAddress();
+    const port = server.address ? (server.address().port || PORT) : PORT;
+    const wsUrl = `ws://${localIp}:${port}`;
+
+    const agentPath = path.join(__dirname, 'agent', 'sensor_agent.js');
+    console.log(`[*] Spawning host-side ADB bridge agent for device: ${serial}`);
+    
+    // Spawn agent process: node sensor_agent.js <ws_url> -s <serial>
+    const agentProcess = spawn('node', [agentPath, wsUrl, '-s', serial]);
+
+    agentProcess.stdout.on('data', (data) => {
+        console.log(`[Agent ${serial} STDOUT]: ${data.toString().trim()}`);
+    });
+
+    agentProcess.stderr.on('data', (data) => {
+        console.error(`[Agent ${serial} STDERR]: ${data.toString().trim()}`);
+    });
+
+    agentProcess.on('close', (code) => {
+        console.log(`[Agent ${serial}] Process exited with code ${code}`);
+        runningAgents.delete(serial);
+    });
+
+    runningAgents.set(serial, agentProcess);
+    res.json({ status: "success", message: `Agent successfully started for device ${serial}` });
+});
+
+// POST /api/agent/stop - stops agent for a device serial
+app.post('/api/agent/stop', (req, res) => {
+    const { serial } = req.body;
+    if (!serial) {
+        return res.status(400).json({ status: "error", message: "Device serial is required" });
+    }
+
+    const agentProcess = runningAgents.get(serial);
+    if (!agentProcess) {
+        return res.json({ status: "success", message: "Agent is not running for this device" });
+    }
+
+    console.log(`[*] Killing host-side ADB bridge agent for device: ${serial}`);
+    agentProcess.kill();
+    runningAgents.delete(serial);
+    res.json({ status: "success", message: `Agent successfully stopped for device ${serial}` });
+});
+
+// GET /api/agent/status - lists all running agents
+app.get('/api/agent/status', (req, res) => {
+    const activeSerials = Array.from(runningAgents.keys());
+    res.json({ status: "success", activeSerials });
 });
 
 // Start the Edge Server

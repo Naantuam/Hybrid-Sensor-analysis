@@ -15,7 +15,7 @@ export default function App() {
   const [onlineSessions, setOnlineSessions] = useState(new Set());
   
   // Navigation / Views State
-  const [currentView, setCurrentView] = useState('monitor'); // 'monitor', 'register'
+  const [currentView, setCurrentView] = useState('onboarding'); // 'telemetry', 'onboarding'
   
   // Session Metrics
   const [kpis, setKpis] = useState({ max_score: 0, total_threats: 0, total_events: 0 });
@@ -158,30 +158,30 @@ export default function App() {
 
         <div className="p-4 border-b border-white/5 space-y-2">
           <button
-            onClick={() => setCurrentView('monitor')}
+            onClick={() => setCurrentView('onboarding')}
             className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold transition-all duration-200 ${
-              currentView === 'monitor' 
-                ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/15' 
-                : 'text-gray-400 hover:text-white hover:bg-white/[0.02]'
-            }`}
-          >
-            <Activity className="w-4 h-4" />
-            Security Monitor
-          </button>
-          <button
-            onClick={() => setCurrentView('register')}
-            className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold transition-all duration-200 ${
-              currentView === 'register' 
+              currentView === 'onboarding' 
                 ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/15' 
                 : 'text-gray-400 hover:text-white hover:bg-white/[0.02]'
             }`}
           >
             <PlusCircle className="w-4 h-4" />
-            Register Device
+            Onboarding & Devices
+          </button>
+          <button
+            onClick={() => setCurrentView('telemetry')}
+            className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold transition-all duration-200 ${
+              currentView === 'telemetry' 
+                ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/15' 
+                : 'text-gray-400 hover:text-white hover:bg-white/[0.02]'
+            }`}
+          >
+            <Activity className="w-4 h-4" />
+            Telemetry & Threats
           </button>
         </div>
 
-        {currentView === 'monitor' && (
+        {currentView === 'telemetry' && (
           <div className="flex-1 overflow-y-auto p-4 space-y-3">
             <div className="text-[10px] text-gray-500 font-bold uppercase tracking-widest px-2 mb-2 font-outfit">Connected Devices</div>
             {sessions.length === 0 ? (
@@ -228,7 +228,7 @@ export default function App() {
       </div>
 
       <div className="flex-1 flex flex-col h-full overflow-hidden z-10">
-        {currentView === 'monitor' ? (
+        {currentView === 'telemetry' ? (
           <ThreatMonitor
             selectedSession={selectedSession}
             kpis={kpis}

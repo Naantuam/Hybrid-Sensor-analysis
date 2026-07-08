@@ -2,9 +2,30 @@ const WebSocket = require('ws');
 const { exec } = require('child_process');
 const { commands, getSuspiciousAccessibilityServices } = require('./commands');
 
-// Dynamic configuration parameters (to be fetched or fallback)
-const LOCAL_URL = process.argv[2] || "ws://edge-monitor.local:4444";
-const CLOUD_URL = process.argv[3] || process.argv[2] || "wss://your-railway-app.railway.app"; // Set by user during railway setup
+// Parse CLI arguments & Environment variables
+let localUrl = "ws://edge-monitor.local:4444";
+let cloudUrl = "wss://your-railway-app.railway.app";
+let serial = process.env.ADB_SERIAL || null;
+
+// Parse positional and flag-based arguments
+const urls = [];
+for (let i = 2; i < process.argv.length; i++) {
+    const arg = process.argv[i];
+    if ((arg === '-s' || arg === '--serial') && i + 1 < process.argv.length) {
+        serial = process.argv[i + 1];
+        i++;
+    } else if (arg.startsWith('ws://') || arg.startsWith('wss://')) {
+        urls.push(arg);
+    }
+}
+
+if (urls.length > 0) {
+    localUrl = urls[0];
+    cloudUrl = urls[1] || urls[0];
+}
+
+const LOCAL_URL = localUrl;
+const CLOUD_URL = cloudUrl;
 
 let activeUrl = LOCAL_URL;
 let ws = null;
@@ -21,12 +42,41 @@ let isAdbBridge = false;
 
 console.log(`[*] Target Local Endpoint: ${LOCAL_URL}`);
 console.log(`[*] Target Cloud Endpoint: ${CLOUD_URL}`);
+if (serial) {
+    console.log(`[*] Target Device Serial: ${serial}`);
+}
+
+// Function to auto-detect a single connected ADB device serial if not provided
+function autoDetectAdbSerial(callback) {
+    if (serial) {
+        return callback();
+    }
+    exec('adb devices', (err, stdout) => {
+        if (!err && stdout) {
+            const lines = stdout.split('\n');
+            const devices = [];
+            for (let line of lines) {
+                const parts = line.trim().split(/\s+/);
+                if (parts.length === 2 && parts[1] === 'device') {
+                    devices.push(parts[0]);
+                }
+            }
+            if (devices.length > 0) {
+                // Default to the first detected device
+                serial = devices[0];
+                console.log(`[*] Auto-detected connected ADB device serial: ${serial}`);
+            }
+        }
+        callback();
+    });
+}
 
 // Initialize Device ID and build attributes dynamically (handles PC adb & local Termux)
 function detectDeviceDetails(callback) {
-    exec('adb shell getprop ro.product.model', (errModel, stdoutModel) => {
+    const adbPrefix = serial ? `adb -s ${serial} ` : 'adb ';
+    exec(`${adbPrefix}shell getprop ro.product.model`, (errModel, stdoutModel) => {
         isAdbBridge = !errModel && stdoutModel.trim() !== "";
-        const propCmd = isAdbBridge ? 'adb shell getprop' : 'getprop';
+        const propCmd = isAdbBridge ? `${adbPrefix}shell getprop` : 'getprop';
 
         exec(`${propCmd} ro.product.model`, (err, stdout) => {
             if (!err && stdout.trim()) {
@@ -48,8 +98,10 @@ function detectDeviceDetails(callback) {
     });
 }
 
-detectDeviceDetails(() => {
-    connectWebSocket();
+autoDetectAdbSerial(() => {
+    detectDeviceDetails(() => {
+        connectWebSocket();
+    });
 });
 
 /**
@@ -107,10 +159,12 @@ function connectWebSocket() {
  * Sends initial handshake registration payload
  */
 function sendHandshake() {
-    exec('adb shell dumpsys wifi | grep -i "SSID:" | head -n 1', (err, stdout) => {
+    const adbPrefix = serial ? `adb -s ${serial} ` : 'adb ';
+    const cmd = isAdbBridge ? `${adbPrefix}shell dumpsys wifi` : 'dumpsys wifi';
+    exec(cmd, (err, stdout) => {
         let wifiSsid = "USB_Tethered/Direct";
         if (!err && stdout) {
-            const matches = stdout.match(/SSID: "(.*?)"/);
+            const matches = stdout.match(/SSID:\s*"(.*?)"/) || stdout.match(/SSID:\s*([^\s,]+)/);
             if (matches && matches[1]) wifiSsid = matches[1];
         }
 
@@ -121,7 +175,7 @@ function sendHandshake() {
             },
             payload: {
                 device_id: deviceId,
-                connection_type: "usb_adb",
+                connection_type: isAdbBridge ? "usb_adb" : "local_termux",
                 ssid: wifiSsid,
                 battery_saver_active: batterySaverActive,
                 api_level: apiLevel,
@@ -137,14 +191,29 @@ function sendHandshake() {
  */
 function startBatteryMonitoring() {
     batteryInterval = setInterval(() => {
-        exec('termux-battery-status', (err, stdout) => {
+        const cmd = isAdbBridge ? (serial ? `adb -s ${serial} shell dumpsys battery` : 'adb shell dumpsys battery') : 'termux-battery-status';
+        exec(cmd, (err, stdout) => {
             if (err) return;
             try {
-                const info = JSON.parse(stdout);
-                // Detect battery saver state:
-                // Android typically exposes battery saver via settings, but we can also trigger
-                // based on percentage <= 15% and not charging as a safety threshold.
-                const isBatteryLow = info.percentage <= 15 && info.status !== "CHARGING";
+                let percentage = 100;
+                let isCharging = false;
+
+                if (isAdbBridge) {
+                    const levelMatch = stdout.match(/level:\s*(\d+)/);
+                    const statusMatch = stdout.match(/status:\s*(\d+)/);
+                    if (levelMatch) {
+                        percentage = parseInt(levelMatch[1]);
+                    }
+                    if (statusMatch) {
+                        isCharging = (parseInt(statusMatch[1]) === 2); // 2 is BATTERY_STATUS_CHARGING
+                    }
+                } else {
+                    const info = JSON.parse(stdout);
+                    percentage = info.percentage;
+                    isCharging = info.status === "CHARGING";
+                }
+
+                const isBatteryLow = percentage <= 15 && !isCharging;
 
                 if (isBatteryLow !== batterySaverActive) {
                     batterySaverActive = isBatteryLow;
@@ -186,7 +255,8 @@ function execPromise(command) {
  * Runs a command on the device (prefixes with adb shell if in ADB bridge mode)
  */
 function runDeviceCmd(command) {
-    const prefix = isAdbBridge ? 'adb shell ' : '';
+    const adbPrefix = serial ? `adb -s ${serial} ` : 'adb ';
+    const prefix = isAdbBridge ? `${adbPrefix}shell ` : '';
     return execPromise(prefix + command);
 }
 
