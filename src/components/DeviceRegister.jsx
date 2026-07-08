@@ -16,6 +16,10 @@ export default function DeviceRegister() {
   const [runningSerials, setRunningSerials] = useState([]);
   const [selectedDevice, setSelectedDevice] = useState(null);
 
+  // Automated USB Provisioner States
+  const [isProvisioning, setIsProvisioning] = useState(false);
+  const [provisionStatus, setProvisionStatus] = useState('');
+
   // Fetch Server Metadata
   useEffect(() => {
     fetch('/api/info')
@@ -84,6 +88,34 @@ export default function DeviceRegister() {
       }
     })
     .catch(err => console.error('[!] Error toggling bridge agent:', err));
+  };
+
+  const handleProvision = (device) => {
+    setIsProvisioning(true);
+    setProvisionStatus(`Initializing USB provisioning for ${device.model}...`);
+    fetch('/api/agent/provision', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ serial: device.serial })
+    })
+    .then(res => res.json())
+    .then(data => {
+      setIsProvisioning(false);
+      if (data.status === 'success') {
+        setProvisionStatus(`Success: Device ${device.model} preconfigured!`);
+        alert(`Device ${device.model} successfully provisioned!`);
+      } else {
+        setProvisionStatus(`Error: ${data.error}`);
+        alert(`Provisioning failed: ${data.error}`);
+      }
+    })
+    .catch(err => {
+      setIsProvisioning(false);
+      setProvisionStatus('Network error occurred.');
+      console.error('[!] Provisioning error:', err);
+    });
   };
 
   const activeBootstrapUrl = serverInfo.bootstrapUrl 
@@ -195,30 +227,44 @@ export default function DeviceRegister() {
                       </div>
 
                       {/* Onboarding triggers */}
-                      <div className="pt-2 flex gap-2 border-t border-white/5">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggleAgent(device);
-                          }}
-                          className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-[9px] font-mono font-bold transition-all ${
-                            isBridgeRunning 
-                              ? 'bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20' 
-                              : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/20'
-                          }`}
-                        >
-                          {isBridgeRunning ? (
-                            <>
-                              <Square className="w-3 h-3 fill-current" />
-                              STOP BRIDGE
-                            </>
-                          ) : (
-                            <>
-                              <Play className="w-3 h-3 fill-current" />
-                              START BRIDGE
-                            </>
-                          )}
-                        </button>
+                      <div className="pt-2 flex flex-col gap-2 border-t border-white/5">
+                        <div className="flex gap-2">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              toggleAgent(device);
+                            }}
+                            className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-[9px] font-mono font-bold transition-all ${
+                              isBridgeRunning 
+                                ? 'bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20' 
+                                : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/20'
+                            }`}
+                          >
+                            {isBridgeRunning ? (
+                              <>
+                                <Square className="w-3 h-3 fill-current" />
+                                STOP BRIDGE
+                              </>
+                            ) : (
+                              <>
+                                <Play className="w-3 h-3 fill-current" />
+                                START BRIDGE
+                              </>
+                            )}
+                          </button>
+
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleProvision(device);
+                            }}
+                            disabled={isProvisioning}
+                            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-[9px] font-mono font-bold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 hover:bg-cyan-500/20 transition-all disabled:opacity-50"
+                          >
+                            <Download className="w-3 h-3" />
+                            AUTO-SETUP
+                          </button>
+                        </div>
                       </div>
                     </div>
                   );
@@ -269,50 +315,47 @@ export default function DeviceRegister() {
 
               <div className="flex flex-col md:flex-row gap-8 items-center">
                 
-                {/* QR Code container */}
-                <div className="flex-shrink-0 bg-[#0b0c15] p-3 rounded-2xl border border-white/5 shadow-inner">
-                  {qrCodeUrl ? (
-                    <img 
-                      src={qrCodeUrl} 
-                      alt="Provisioning QR Code" 
-                      className="w-[200px] h-[200px] rounded-lg block border border-cyan-500/10" 
-                    />
+                {/* Provisioning Status Visualizer */}
+                <div className="flex-shrink-0 bg-[#0b0c15] p-6 rounded-2xl border border-white/5 shadow-inner w-full md:w-[220px] h-[220px] flex flex-col items-center justify-center text-center space-y-3">
+                  {isProvisioning ? (
+                    <>
+                      <Loader2 className="w-10 h-10 text-cyan-400 animate-spin" />
+                      <div className="text-[10px] text-cyan-300 font-mono">Provisioning Workspace...</div>
+                    </>
+                  ) : provisionStatus.startsWith('Success') ? (
+                     <>
+                       <CheckCircle2 className="w-10 h-10 text-emerald-400" />
+                       <div className="text-[10px] text-emerald-300 font-mono">Device Preconfigured!</div>
+                     </>
                   ) : (
-                    <div className="w-[200px] h-[200px] flex items-center justify-center text-xs text-gray-600 font-mono bg-[#0d0e1b] rounded-lg">
-                      Generating QR...
-                    </div>
+                    <>
+                      <Smartphone className="w-10 h-10 text-cyan-500/50" />
+                      <div className="text-[10px] text-gray-500 font-mono">Ready for USB Setup</div>
+                    </>
+                  )}
+                  {provisionStatus && (
+                    <div className="text-[9px] text-gray-400 font-mono max-w-[180px] truncate">{provisionStatus}</div>
                   )}
                 </div>
 
                 {/* Text and commands */}
                 <div className="flex-1 space-y-4 w-full">
                   <div className="text-xs text-gray-300 space-y-2">
-                    <span className="font-bold text-white block">A. Termux Local Mode (QR Scan)</span>
+                    <span className="font-bold text-white block">A. Automated Host-Side USB Setup (Recommended)</span>
                     <p className="text-gray-400 leading-relaxed">
-                      Scan the QR code with your target phone to instantly trigger Termux setup. Alternatively, execute this console hook inside your Termux terminal:
+                      Configure the device completely over the USB cable without typing on the screen. The server will detect its CPU architecture, push the correct Termux packages, and extract them.
                     </p>
+                    <button
+                      onClick={() => handleProvision(selectedDevice)}
+                      disabled={isProvisioning}
+                      className="flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-500 disabled:bg-cyan-800 text-white text-xs font-bold rounded-xl transition-all shadow-md"
+                    >
+                      {isProvisioning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                      Run Automated USB Setup
+                    </button>
                   </div>
 
-                  <div className="bg-black/60 border border-white/5 rounded-xl p-4 font-mono text-[10.5px] text-cyan-400 relative overflow-x-auto whitespace-pre">
-                    <div className="flex items-center justify-between pb-2 border-b border-white/[0.03] mb-2.5">
-                      <div className="flex items-center gap-1.5">
-                        <Terminal className="w-3.5 h-3.5 text-gray-500" />
-                        <span className="text-gray-500 text-[9px] uppercase tracking-wider font-bold">Termux Bootstrap Hook</span>
-                      </div>
-                      <button
-                        onClick={copyCommand}
-                        className="p-1 rounded bg-white/5 border border-white/10 text-gray-400 hover:text-white hover:bg-white/10 transition-colors"
-                        title="Copy hook command"
-                      >
-                        {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                      </button>
-                    </div>
-                    <code className="text-gray-300">
-                      curl -s "{activeBootstrapUrl}" | bash
-                    </code>
-                  </div>
-
-                  <div className="text-xs text-gray-300 space-y-2 pt-2 border-t border-white/5">
+                  <div className="text-xs text-gray-300 space-y-2 pt-4 border-t border-white/5">
                     <span className="font-bold text-white block">B. USB ADB Host Bridge Mode</span>
                     <p className="text-gray-400 leading-relaxed">
                       No Termux setup needed! Toggle the **START BRIDGE** action in the device list. The edge server will run the telemetry agent directly on this host machine, connecting to your handset via ADB.
@@ -325,7 +368,7 @@ export default function DeviceRegister() {
           ) : (
             <div className="bg-[#10111a]/60 border border-white/5 rounded-2xl p-8 backdrop-blur-md text-center py-20 space-y-3">
               <Smartphone className="w-12 h-12 text-gray-700 mx-auto" />
-              <p className="text-sm text-gray-400">Please scan for connected USB devices and select a handset to begin onboarding.</p>
+               <p className="text-sm text-gray-400">Please scan for connected USB devices and select a handset to begin onboarding.</p>
             </div>
           )}
 

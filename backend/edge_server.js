@@ -6,7 +6,6 @@ const os = require('os');
 const path = require('path');
 const fs = require('fs');
 const { exec, spawn } = require('child_process');
-const qrcode = require('qrcode-terminal');
 const { 
     initDatabase, 
     saveSession, 
@@ -35,6 +34,10 @@ const wss = new WebSocket.Server({ server });
 
 // Memory maps to store active sessions (mapped by WS connection or session ID)
 const activeSessions = new Map();
+
+// Cloud sync state variables
+const IS_CLOUD = process.env.IS_CLOUD === 'true';
+const kaliConnections = new Set();
 
 // System Accessibility Service package prefixes to ignore during security scans
 const SYSTEM_PREFIXES = ['com.android', 'com.google.android', 'com.sec.android', 'com.samsung', 'org.chromium', 'com.huawei', 'com.lg', 'com.xiaomi', 'com.oppo'];
@@ -65,8 +68,234 @@ function broadcastActiveSessions() {
     });
 }
 
-// Initialize Neon database tables
+// Initialize database tables
 initDatabase();
+
+// Sync client connection (only runs on local Kali machine if CLOUD_WS_URL is provided)
+if (!IS_CLOUD && process.env.CLOUD_WS_URL) {
+    connectToCloudSync(process.env.CLOUD_WS_URL);
+}
+
+function connectToCloudSync(url) {
+    console.log(`[*] Connecting to Cloud Sync Server: ${url}`);
+    const wsClient = new WebSocket(url);
+
+    wsClient.on('open', () => {
+        console.log('[+] Connected to Cloud Sync. Registering Kali machine...');
+        wsClient.send(JSON.stringify({ event_type: "kali_connection" }));
+    });
+
+    wsClient.on('message', async (data) => {
+        try {
+            const packet = JSON.parse(data);
+            console.log(`[+] Received forwarded telemetry event from Cloud: ${packet.event_type}`);
+            await processTelemetryPacket(packet, null, 'Cloud_Sync');
+        } catch (err) {
+            console.error('[!] Error processing forwarded cloud sync event:', err.message);
+        }
+    });
+
+    wsClient.on('close', () => {
+        console.log('[-] Cloud Sync connection closed. Reconnecting in 10 seconds...');
+        setTimeout(() => connectToCloudSync(url), 10000);
+    });
+
+    wsClient.on('error', (err) => {
+        console.error('[!] Cloud Sync connection error:', err.message);
+    });
+}
+
+function broadcastToKali(packet) {
+    const payload = JSON.stringify(packet);
+    kaliConnections.forEach(kaliWs => {
+        if (kaliWs.readyState === WebSocket.OPEN) {
+            kaliWs.send(payload);
+        }
+    });
+}
+
+async function processTelemetryPacket(packet, ws, clientIp) {
+    // 1. Handshake Session Registration Event
+    if (packet.event_type === "agent_session") {
+        const { device_id, connection_type, ssid, battery_saver_active, api_level, os_version } = packet.payload || {};
+        
+        // Save connection details in the database
+        const sessionId = await saveSession(
+            device_id || "Unknown_Device",
+            clientIp || "0.0.0.0",
+            connection_type || "unknown",
+            ssid || "unknown",
+            !!battery_saver_active,
+            api_level || null,
+            os_version || null
+        );
+        
+        // Map connection to the session ID if ws is provided
+        if (ws) {
+            activeSessions.set(ws, {
+                sessionId,
+                deviceId: device_id,
+                ssid,
+                batterySaverActive: !!battery_saver_active,
+                apiLevel: api_level || null,
+                osVersion: os_version || null
+            });
+            
+            // Confirm registration back to client
+            ws.send(JSON.stringify({
+                event_type: "session_registered",
+                status: "success",
+                session_id: sessionId
+            }));
+        }
+        
+        console.log(`[+] Registered Session ID ${sessionId} for Device: ${device_id} on network: ${ssid}`);
+        
+        // Broadcast active online sessions update to dashboards
+        broadcastActiveSessions();
+    }
+
+    // 2. Battery Saver State Change Event
+    else if (packet.event_type === "battery_saver_change") {
+        let sessionInfo = null;
+        if (ws) {
+            sessionInfo = activeSessions.get(ws);
+        }
+        if (!sessionInfo && packet.metadata?.device_id) {
+            const sessionsList = await getSessions();
+            const localSess = sessionsList.find(s => s.device_id === packet.metadata.device_id);
+            if (localSess) {
+                sessionInfo = { sessionId: localSess.id, deviceId: localSess.device_id };
+            }
+        }
+
+        if (sessionInfo) {
+            const { battery_saver_active } = packet.payload || {};
+            if (ws && activeSessions.has(ws)) {
+                activeSessions.get(ws).batterySaverActive = !!battery_saver_active;
+            }
+            
+            await updateSessionBatterySaver(sessionInfo.sessionId, !!battery_saver_active);
+            console.log(`[*] Battery Saver state updated to ${battery_saver_active} for Session ${sessionInfo.sessionId}`);
+        }
+    }
+
+    // 3. App-Level Sensor Usage Telemetry Event
+    else if (packet.event_type === "app_sensor_telemetry") {
+        let sessionInfo = null;
+        if (ws) {
+            sessionInfo = activeSessions.get(ws);
+        }
+        if (!sessionInfo && packet.metadata?.device_id) {
+            const sessionsList = await getSessions();
+            const localSess = sessionsList.find(s => s.device_id === packet.metadata.device_id);
+            if (localSess) {
+                sessionInfo = { sessionId: localSess.id, deviceId: localSess.device_id };
+            }
+        }
+
+        if (!sessionInfo) {
+            console.log('[!] Warning: Telemetry received but session is not registered.');
+            return;
+        }
+        
+        const { app_package, app_uid, app_state, sensor_name, polling_rate_hz, metadata, payload } = packet.payload || {};
+        const timestamp = packet.metadata?.timestamp || Date.now();
+        
+        // Save the raw app sensor usage event in the database
+        await saveSensorEvent(
+            sessionInfo.sessionId,
+            app_package,
+            app_uid,
+            app_state,
+            sensor_name,
+            polling_rate_hz,
+            timestamp
+        );
+        
+        // Construct standard telemetry package for rules evaluation
+        const rulesInputPacket = {
+            metadata: {
+                device_id: sessionInfo.deviceId,
+                app_state: app_state,
+                screen_state: metadata?.screen_state || "ON",
+                has_foreground_service: !!metadata?.has_foreground_service,
+                accessibility_warnings: getSuspiciousAccessibilityServices(metadata?.enabled_accessibility_services)
+            },
+            payload: {
+                mic_active: sensor_name === "Microphone",
+                camera_active: sensor_name === "Camera",
+                gps_active: sensor_name === "GPS" || sensor_name === "GPS_Location" || sensor_name === "Network_Location",
+                ble_scan_active: sensor_name === "Bluetooth_Scan",
+                biometric_active: sensor_name === "Biometric_Auth",
+                proximity_engaged: !!payload?.proximity_engaged,
+                motion_freq: sensor_name === "Accelerometer" || sensor_name === "Gyroscope" ? polling_rate_hz : 0,
+                light_freq: sensor_name === "Light" ? polling_rate_hz : 0
+            }
+        };
+
+        // Run threat evaluation rules engine
+        const evaluation = evaluatePacket(rulesInputPacket);
+
+        // If threat is SUSPICIOUS or CRITICAL, record and broadcast alert
+        if (evaluation.threatLevel !== "BENIGN") {
+            console.log(`\n[!] Security Threat Triggered: [Level: ${evaluation.threatLevel}] [Score: ${evaluation.totalScore}]`);
+            console.log(`[!] Application: ${app_package} | Sensor: ${sensor_name}`);
+            
+            await saveThreatAlert(
+                sessionInfo.sessionId,
+                evaluation.threatLevel,
+                evaluation.totalScore,
+                evaluation.triggeredRules,
+                evaluation.modifiersApplied,
+                app_package,
+                {
+                    sensor_name,
+                    app_state,
+                    screen_state: rulesInputPacket.metadata.screen_state,
+                    polling_rate_hz: rulesInputPacket.payload.motion_freq || rulesInputPacket.payload.light_freq || 0,
+                    has_foreground_service: rulesInputPacket.metadata.has_foreground_service,
+                    accessibility_warnings: rulesInputPacket.metadata.accessibility_warnings
+                },
+                timestamp
+            );
+
+            // Package the threat event
+            const alertPayload = {
+                event_type: "security_alert",
+                metadata: {
+                    device_id: sessionInfo.deviceId,
+                    session_id: sessionInfo.sessionId,
+                    timestamp
+                },
+                payload: {
+                    app_package,
+                    app_state,
+                    sensor_name,
+                    score: evaluation.totalScore,
+                    threat_level: evaluation.threatLevel,
+                    triggered_rules: evaluation.triggeredRules,
+                    modifiers: evaluation.modifiersApplied,
+                    observed_telemetry: {
+                        sensor_name,
+                        app_state,
+                        screen_state: rulesInputPacket.metadata.screen_state,
+                        polling_rate_hz: rulesInputPacket.payload.motion_freq || rulesInputPacket.payload.light_freq || 0,
+                        has_foreground_service: rulesInputPacket.metadata.has_foreground_service,
+                        accessibility_warnings: rulesInputPacket.metadata.accessibility_warnings
+                    }
+                }
+            };
+
+            // Broadcast alert to dashboards
+            wss.clients.forEach((client) => {
+                if (client !== ws && client.readyState === WebSocket.OPEN) {
+                    client.send(JSON.stringify(alertPayload));
+                }
+            });
+        }
+    }
+}
 
 // The WebSocket Message Broker
 wss.on('connection', (ws, req) => {
@@ -84,159 +313,20 @@ wss.on('connection', (ws, req) => {
         try {
             const packet = JSON.parse(message);
             
-            // 1. Handshake Session Registration Event
-            if (packet.event_type === "agent_session") {
-                const { device_id, connection_type, ssid, battery_saver_active, api_level, os_version } = packet.payload || {};
-                
-                // Save connection details in the database
-                const sessionId = await saveSession(
-                    device_id || "Unknown_Device",
-                    clientIp,
-                    connection_type || "unknown",
-                    ssid || "unknown",
-                    !!battery_saver_active,
-                    api_level || null,
-                    os_version || null
-                );
-                
-                // Map connection to the session ID
-                activeSessions.set(ws, {
-                    sessionId,
-                    deviceId: device_id,
-                    ssid,
-                    batterySaverActive: !!battery_saver_active,
-                    apiLevel: api_level || null,
-                    osVersion: os_version || null
-                });
-                
-                console.log(`[+] Registered Session ID ${sessionId} for Device: ${device_id} on network: ${ssid}`);
-                
-                // Broadcast active sessions update to dashboards
-                broadcastActiveSessions();
-                
-                // Confirm registration back to client
-                ws.send(JSON.stringify({
-                    event_type: "session_registered",
-                    status: "success",
-                    session_id: sessionId
-                }));
+            // Handle special connection types (like Kali client connections)
+            if (packet.event_type === "kali_connection") {
+                console.log(`[+] Kali Machine Analyzer Sync Client registered from IP: ${clientIp}`);
+                kaliConnections.add(ws);
+                ws.on('close', () => kaliConnections.delete(ws));
+                return;
             }
 
-            // 2. Battery Saver State Change Event
-            else if (packet.event_type === "battery_saver_change") {
-                const sessionInfo = activeSessions.get(ws);
-                if (sessionInfo) {
-                    const { battery_saver_active } = packet.payload || {};
-                    sessionInfo.batterySaverActive = !!battery_saver_active;
-                    
-                    await updateSessionBatterySaver(sessionInfo.sessionId, !!battery_saver_active);
-                    console.log(`[*] Battery Saver state updated to ${battery_saver_active} for Session ${sessionInfo.sessionId}`);
-                }
-            }
+            // Process packet locally
+            await processTelemetryPacket(packet, ws, clientIp);
 
-            // 3. App-Level Sensor Usage Telemetry Event
-            else if (packet.event_type === "app_sensor_telemetry") {
-                const sessionInfo = activeSessions.get(ws);
-                if (!sessionInfo) {
-                    console.log('[!] Warning: Telemetry received but session is not registered.');
-                    return;
-                }
-                
-                const { app_package, app_uid, app_state, sensor_name, polling_rate_hz, metadata, payload } = packet.payload || {};
-                const timestamp = packet.metadata?.timestamp || Date.now();
-                
-                // Save the raw app sensor usage event in the database
-                await saveSensorEvent(
-                    sessionInfo.sessionId,
-                    app_package,
-                    app_uid,
-                    app_state,
-                    sensor_name,
-                    polling_rate_hz,
-                    timestamp
-                );
-                
-                // Construct standard telemetry package for rules evaluation
-                const rulesInputPacket = {
-                    metadata: {
-                        device_id: sessionInfo.deviceId,
-                        app_state: app_state,
-                        screen_state: metadata?.screen_state || "ON",
-                        has_foreground_service: !!metadata?.has_foreground_service,
-                        accessibility_warnings: getSuspiciousAccessibilityServices(metadata?.enabled_accessibility_services)
-                    },
-                    payload: {
-                        mic_active: sensor_name === "Microphone",
-                        camera_active: sensor_name === "Camera",
-                        gps_active: sensor_name === "GPS" || sensor_name === "GPS_Location" || sensor_name === "Network_Location",
-                        ble_scan_active: sensor_name === "Bluetooth_Scan",
-                        biometric_active: sensor_name === "Biometric_Auth",
-                        proximity_engaged: !!payload?.proximity_engaged,
-                        motion_freq: sensor_name === "Accelerometer" || sensor_name === "Gyroscope" ? polling_rate_hz : 0,
-                        light_freq: sensor_name === "Light" ? polling_rate_hz : 0
-                    }
-                };
-
-                // Run threat evaluation rules engine
-                const evaluation = evaluatePacket(rulesInputPacket);
-
-                // If threat is SUSPICIOUS or CRITICAL, record and broadcast alert
-                if (evaluation.threatLevel !== "BENIGN") {
-                    console.log(`\n[!] Security Threat Triggered: [Level: ${evaluation.threatLevel}] [Score: ${evaluation.totalScore}]`);
-                    console.log(`[!] Application: ${app_package} | Sensor: ${sensor_name}`);
-                    
-                    await saveThreatAlert(
-                        sessionInfo.sessionId,
-                        evaluation.threatLevel,
-                        evaluation.totalScore,
-                        evaluation.triggeredRules,
-                        evaluation.modifiersApplied,
-                        app_package,
-                        {
-                            sensor_name,
-                            app_state,
-                            screen_state: rulesInputPacket.metadata.screen_state,
-                            polling_rate_hz: rulesInputPacket.payload.motion_freq || rulesInputPacket.payload.light_freq || 0,
-                            has_foreground_service: rulesInputPacket.metadata.has_foreground_service,
-                            accessibility_warnings: rulesInputPacket.metadata.accessibility_warnings
-                        },
-                        timestamp
-                    );
-
-                    // Package the threat event
-                    const alertPayload = {
-                        event_type: "security_alert",
-                        metadata: {
-                            device_id: sessionInfo.deviceId,
-                            session_id: sessionInfo.sessionId,
-                            timestamp
-                        },
-                        payload: {
-                            app_package,
-                            app_state,
-                            sensor_name,
-                            score: evaluation.totalScore,
-                            threat_level: evaluation.threatLevel,
-                            triggered_rules: evaluation.triggeredRules,
-                            modifiers: evaluation.modifiersApplied,
-                            observed_telemetry: {
-                                sensor_name,
-                                app_state,
-                                screen_state: rulesInputPacket.metadata.screen_state,
-                                polling_rate_hz: rulesInputPacket.payload.motion_freq || rulesInputPacket.payload.light_freq || 0,
-                                has_foreground_service: rulesInputPacket.metadata.has_foreground_service,
-                                accessibility_warnings: rulesInputPacket.metadata.accessibility_warnings
-                            }
-                        }
-                    };
-
-                    // Broadcast alert to other dashboards (e.g. React panel)
-                    wss.clients.forEach((client) => {
-                        if (client !== ws && client.readyState === WebSocket.OPEN) {
-                            client.send(JSON.stringify(alertPayload));
-                        }
-                    });
-                }
+            // If we are on the cloud (IS_CLOUD), forward this packet to connected local Kali analyzers
+            if (IS_CLOUD) {
+                broadcastToKali(packet);
             }
         } catch (error) {
             console.log(`\n[!] Error processing incoming packet: ${error.message}`);
@@ -417,26 +507,40 @@ echo "   Bootstrapping Hybrid Sensor Telemetry Agent   "
 echo "================================================="
 echo "[*] Target Host IP: ${localIp}"
 
-# Detect Android API Level locally on device
+# Detect Android API Level and CPU ABI locally on device
 API_LEVEL=$(getprop ro.build.version.sdk)
-echo "[*] Detected Android API Level: \${API_LEVEL}"
+CPU_ABI=$(getprop ro.product.cpu.abi)
+echo "[*] Detected API: \${API_LEVEL} | CPU: \${CPU_ABI}"
 
 echo "[*] Setting up workspace directory at ~/hybrid-agent..."
 mkdir -p ~/hybrid-agent
 cd ~/hybrid-agent
 
 # Try to restore preconfigured environment first
-echo "[*] Auditing for preconfigured Termux backup (API \${API_LEVEL})..."
-STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://${localIp}:${port}/download/termux-backup-\${API_LEVEL}.tar.gz")
+echo "[*] Auditing for preconfigured Termux backup (CPU \${CPU_ABI} | API \${API_LEVEL})..."
+STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://${localIp}:${port}/download/termux-backup-\${CPU_ABI}-\${API_LEVEL}.tar.gz")
 if [ "\$STATUS_CODE" -eq 200 ]; then
-    echo "[+] Found preconfigured Termux snapshot! Downloading environment..."
-    curl -o termux-backup.tar.gz "http://${localIp}:${port}/download/termux-backup-\${API_LEVEL}.tar.gz"
+    BACKUP_FILE="termux-backup-\${CPU_ABI}-\${API_LEVEL}.tar.gz"
+else
+    # Fallback to the standard baseline backup (API 29) for this architecture
+    echo "[-] No specific API \${API_LEVEL} backup. Checking baseline API 29 backup..."
+    STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://${localIp}:${port}/download/termux-backup-\${CPU_ABI}-29.tar.gz")
+    if [ "\$STATUS_CODE" -eq 200 ]; then
+        BACKUP_FILE="termux-backup-\${CPU_ABI}-29.tar.gz"
+    else
+        BACKUP_FILE=""
+    fi
+fi
+
+if [ -n "\$BACKUP_FILE" ]; then
+    echo "[+] Found environment snapshot: \${BACKUP_FILE}! Downloading..."
+    curl -o termux-backup.tar.gz "http://${localIp}:${port}/download/\${BACKUP_FILE}"
     echo "[*] Unpacking backup to Termux root directory..."
     tar -zxf termux-backup.tar.gz -C /data/data/com.termux/files --recursive-unlink --preserve-permissions
     rm termux-backup.tar.gz
     echo "[+] Termux environment successfully restored!"
 else
-    echo "[-] No preconfigured Termux snapshot found for API \${API_LEVEL}. Proceeding with standard setup..."
+    echo "[-] No compatible Termux environment snapshot found. Proceeding with standard clean setup..."
 fi
 
 echo "[*] Downloading mobile-side agent components..."
@@ -565,21 +669,34 @@ app.get('/api/agent/status', (req, res) => {
     res.json({ status: "success", activeSerials });
 });
 
+// POST /api/agent/provision - Runs the host-side provisioning script for a device serial
+app.post('/api/agent/provision', (req, res) => {
+    const { serial } = req.body;
+    if (!serial) {
+        return res.status(400).json({ status: "error", message: "Device serial is required" });
+    }
+
+    const scriptPath = path.join(__dirname, 'agent', 'provision_device.sh');
+
+    console.log(`[*] Executing automated USB provisioning script for serial: ${serial}`);
+    
+    // Execute provision_device.sh passing the serial ID as the first argument
+    exec(`bash "${scriptPath}" "${serial}"`, (err, stdout, stderr) => {
+        if (err) {
+            console.error(`[!] Provisioning failed for serial ${serial}:`, stderr || err.message);
+            return res.status(500).json({ status: "error", error: stderr || err.message });
+        }
+        console.log(`[+] Provisioning output:\n`, stdout);
+        res.json({ status: "success", output: stdout });
+    });
+});
+
 // Start the Edge Server
 const PORT = process.env.PORT || 4444;
 server.listen(PORT, '0.0.0.0', () => {
-    const localIp = getLocalIpAddress();
-    const bootstrapUrl = `http://${localIp}:${PORT}/bootstrap`;
-
     console.log(`=================================================`);
     console.log(`[x] Hybrid Edge-Analysis Server Online`);
     console.log(`[x] Listening on Port ${PORT}`);
     console.log(`[x] Connected to database: ${process.env.DATABASE_URL ? 'Neon Postgres' : 'None (Mock Mode)'}`);
-    console.log(`=================================================`);
-    console.log(`[*] LOCAL OFFLINE PROVISIONING FOR MOBILE DEVICES`);
-    console.log(`[*] Scan this QR code in Termux (or run: curl -s ${bootstrapUrl} | bash) to setup the phone:`);
-    console.log(`URL: ${bootstrapUrl}`);
-    console.log(`=================================================`);
-    qrcode.generate(bootstrapUrl, { small: true });
     console.log(`=================================================`);
 });

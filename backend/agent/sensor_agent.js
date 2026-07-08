@@ -3,7 +3,7 @@ const { exec } = require('child_process');
 const { commands, getSuspiciousAccessibilityServices } = require('./commands');
 
 // Parse CLI arguments & Environment variables
-let localUrl = "ws://edge-monitor.local:4444";
+let localUrl = "ws://kali.local:4444";
 let cloudUrl = "wss://your-railway-app.railway.app";
 let serial = process.env.ADB_SERIAL || null;
 

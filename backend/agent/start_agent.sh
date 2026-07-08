@@ -4,7 +4,7 @@
 # =================================================================
 
 # 1. Grab endpoints from command-line arguments, environment, or fall back to default
-LOCAL_ENDPOINT=${1:-"ws://edge-monitor.local:4444"}
+LOCAL_ENDPOINT=${1:-"ws://kali.local:4444"}
 CLOUD_ENDPOINT=${2:-"wss://your-railway-app.railway.app"}
 
 PID_FILE="/tmp/sensor_agent.pid"
