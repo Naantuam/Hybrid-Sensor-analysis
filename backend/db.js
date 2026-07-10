@@ -406,7 +406,7 @@ async function synchronizeOfflineData() {
  * Retrieves all sessions
  */
 async function getSessions() {
-    if (isCloud && connectionString) {
+    if (connectionString) {
         const res = await pgPool.query("SELECT * FROM sessions ORDER BY connected_at DESC LIMIT 100");
         return res.rows;
     } else {
@@ -429,7 +429,7 @@ async function getSessions() {
  * Retrieves stats for a session
  */
 async function getSessionStats(sessionId) {
-    if (isCloud && connectionString) {
+    if (connectionString) {
         const statsQuery = `
             SELECT 
                 (SELECT COALESCE(MAX(score), 0) FROM threat_alerts WHERE session_id = $1) as max_score,
@@ -466,7 +466,7 @@ async function getSessionStats(sessionId) {
  * Retrieves alerts for a session
  */
 async function getThreatAlerts(sessionId) {
-    if (isCloud && connectionString) {
+    if (connectionString) {
         const res = await pgPool.query("SELECT * FROM threat_alerts WHERE session_id = $1 ORDER BY timestamp DESC", [sessionId]);
         return res.rows;
     } else {
@@ -489,7 +489,7 @@ async function getThreatAlerts(sessionId) {
  * Retrieves sensor events for a session
  */
 async function getSensorEvents(sessionId) {
-    if (isCloud && connectionString) {
+    if (connectionString) {
         const res = await pgPool.query("SELECT * FROM sensor_events WHERE session_id = $1 ORDER BY timestamp DESC LIMIT 200", [sessionId]);
         return res.rows;
     } else {
