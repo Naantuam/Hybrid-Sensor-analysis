@@ -28,7 +28,7 @@ termux-notification \
   --title "Hybrid Sensor Monitor" \
   --content "Active. Monitoring application sensor usage..." \
   --button1 "STOP AGENT" \
-  --button1-action "bash ~/stop_agent.sh" \
+  --button1-action "bash /data/data/com.termux/files/home/hybrid-agent/stop_agent.sh" \
   --priority high \
   --ongoing
 

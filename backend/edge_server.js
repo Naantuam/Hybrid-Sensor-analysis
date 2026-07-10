@@ -5,6 +5,22 @@ const cors = require('cors');
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
+
+// Load environment variables from .env if present (local fallback)
+const envPath = path.join(__dirname, '..', '.env');
+if (fs.existsSync(envPath)) {
+    fs.readFileSync(envPath, 'utf8').split(/\r?\n/).forEach(line => {
+        const match = line.match(/^\s*([\w.-]+)\s*=\s*(.*)?\s*$/);
+        if (match) {
+            const key = match[1];
+            let value = (match[2] || '').trim();
+            if (value.startsWith('"') && value.endsWith('"')) value = value.slice(1, -1);
+            else if (value.startsWith("'") && value.endsWith("'")) value = value.slice(1, -1);
+            process.env[key] = value;
+        }
+    });
+}
+
 const { exec, spawn } = require('child_process');
 const { 
     initDatabase, 
