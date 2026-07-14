@@ -30,5 +30,5 @@ pnpm-debug.log*
 .DS_Store
 
 # Termux Environment
-termux-backup/
-termux-backup.tar.gz
+backend/agent/termux-backup-*.tar.gz
+backend/agent/termux-backup.tar.gz
