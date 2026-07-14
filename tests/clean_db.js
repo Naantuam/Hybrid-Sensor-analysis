@@ -1,4 +1,5 @@
 const { Pool } = require('pg');
+const { DatabaseSync } = require('node:sqlite');
 const fs = require('fs');
 const path = require('path');
 
@@ -19,34 +20,48 @@ if (fs.existsSync(envPath)) {
 
 const connectionString = process.env.DATABASE_URL;
 
-if (!connectionString) {
-    console.error('[!] Error: DATABASE_URL environment variable is missing.');
-    console.error('[*] Usage: DATABASE_URL="your-connection-string" node tests/clean_db.js');
-    process.exit(1);
-}
-
-const pool = new Pool({
-    connectionString,
-    ssl: {
-        rejectUnauthorized: false
-    }
-});
-
 async function cleanDatabase() {
-    console.log('[*] Connecting to database to clear tables...');
-    const client = await pool.connect();
-    try {
-        console.log('[*] Truncating threat_alerts, sensor_events, and sessions tables...');
-        
-        // Truncate tables and restart auto-increment counters, cascade handles foreign keys
-        await client.query('TRUNCATE TABLE sessions, sensor_events, threat_alerts RESTART IDENTITY CASCADE;');
-        
-        console.log('[+] Database successfully cleared of all mock data.');
-    } catch (err) {
-        console.error('[!] Error clearing database:', err.message);
-    } finally {
-        client.release();
-        await pool.end();
+    // 1. Clear PostgreSQL database
+    if (connectionString) {
+        console.log('[*] Connecting to PostgreSQL database to clear tables...');
+        const pool = new Pool({
+            connectionString,
+            ssl: {
+                rejectUnauthorized: false
+            }
+        });
+        let client;
+        try {
+            client = await pool.connect();
+            console.log('[*] Truncating remote sessions, sensor_events, and threat_alerts tables...');
+            await client.query('TRUNCATE TABLE sessions, sensor_events, threat_alerts RESTART IDENTITY CASCADE;');
+            console.log('[+] PostgreSQL database successfully cleared of all mock/test data.');
+        } catch (err) {
+            console.error('[!] Error clearing PostgreSQL database:', err.message);
+        } finally {
+            if (client) client.release();
+            await pool.end();
+        }
+    } else {
+        console.log('[*] No DATABASE_URL found. Skipping PostgreSQL cleanup.');
+    }
+
+    // 2. Clear local SQLite database
+    const sqlitePath = path.join(__dirname, '..', 'backend', 'sensor_local.db');
+    if (fs.existsSync(sqlitePath)) {
+        console.log('[*] Clearing local SQLite database...');
+        try {
+            const db = new DatabaseSync(sqlitePath);
+            db.exec('DELETE FROM sessions;');
+            db.exec('DELETE FROM sensor_events;');
+            db.exec('DELETE FROM threat_alerts;');
+            db.exec('VACUUM;');
+            console.log('[+] Local SQLite database successfully cleared.');
+        } catch (err) {
+            console.error('[!] Error clearing SQLite database:', err.message);
+        }
+    } else {
+        console.log('[*] Local SQLite database not found. Skipping SQLite cleanup.');
     }
 }
 
