@@ -28,3 +28,7 @@ pnpm-debug.log*
 .vscode/
 .idea/
 .DS_Store
+
+# Termux Environment
+termux-backup/
+termux-backup.tar.gz
