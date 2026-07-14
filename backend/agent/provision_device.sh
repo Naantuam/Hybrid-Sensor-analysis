@@ -94,6 +94,25 @@ nohup node sensor_agent.js "\$LOCAL_ENDPOINT" "\$CLOUD_ENDPOINT" > agent.log 2>&
 echo \$! > "\$PID_FILE"
 EOF
 
+# Check if termux files are already set up on the handset
+HAS_AGENT=$(adb -s "$SERIAL" shell "[ -f /data/data/com.termux/files/home/hybrid-agent/sensor_agent.js ] && echo 'yes' || echo 'no'" | tr -d '\r')
+
+if [ "$HAS_AGENT" = "yes" ]; then
+    echo "[+] Termux setup already detected on device."
+    echo "[*] Updating startup scripts and permissions..."
+    
+    # Overwrite the startup script on Termux with the customized version
+    adb -s "$SERIAL" push "$DYNAMIC_START" /data/data/com.termux/files/home/hybrid-agent/start_agent.sh
+    adb -s "$SERIAL" shell "chmod +x /data/data/com.termux/files/home/hybrid-agent/*.sh"
+    
+    echo "================================================="
+    echo "[+] Device re-registered successfully!"
+    echo "[*] Start the agent on the phone using: cd ~/hybrid-agent && bash start_agent.sh"
+    echo "================================================="
+    rm -f "$DYNAMIC_START"
+    exit 0
+fi
+
 if [ -f "$BACKUP_FILE" ]; then
     echo "[+] Selected environment snapshot: ${BACKUP_FILE}"
     
