@@ -2,10 +2,10 @@ import React, { useState, useEffect } from 'react';
 import { 
   Smartphone, Cpu, CheckCircle2, Terminal, Copy, Check, 
   RefreshCw, Download, Info, ExternalLink, ShieldAlert, Radio,
-  Play, Square, Loader2
+  Play, Square, Loader2, Menu
 } from 'lucide-react';
 
-export default function DeviceRegister() {
+export default function DeviceRegister({ toggleSidebar }) {
   const [serverInfo, setServerInfo] = useState({ localIp: '', port: 4444, bootstrapUrl: '' });
   const [detectedDevices, setDetectedDevices] = useState([]);
   const [selectedProfile, setSelectedProfile] = useState('modern'); // 'modern', 'legacy', 'x86_64'
@@ -146,15 +146,24 @@ export default function DeviceRegister() {
   return (
     <div className="space-y-8 animate-fadeIn max-w-6xl mx-auto p-4">
       {/* HEADER SECTION */}
-      <div className="bg-[#10111a]/60 border border-white/5 rounded-2xl p-6 backdrop-blur-md flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-        <div>
-          <h2 className="text-xl font-bold font-outfit text-white flex items-center gap-2">
-            <Radio className="w-5 h-5 text-cyan-400 animate-pulse" />
-            Device Onboarding & Scanning Center
-          </h2>
-          <p className="text-xs text-gray-400 mt-1">
-            Perform automatic scans, view physical USB attributes, and register agents using Termux QR codes or Host-side ADB bridges.
-          </p>
+      <div className="bg-[#10111a]/60 border border-white/5 rounded-2xl p-4 md:p-6 backdrop-blur-md flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+        <div className="flex items-start gap-3">
+          {/* Hamburger Menu Toggler on Mobile */}
+          <button
+            onClick={toggleSidebar}
+            className="md:hidden mt-1 p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/5 flex-shrink-0"
+          >
+            <Menu className="w-5 h-5" />
+          </button>
+          <div>
+            <h2 className="text-xl font-bold font-outfit text-white flex items-center gap-2">
+              <Radio className="w-5 h-5 text-cyan-400 animate-pulse" />
+              Device Onboarding & Scanning Center
+            </h2>
+            <p className="text-xs text-gray-400 mt-1">
+              Perform automatic scans, view physical USB attributes, and register agents using Termux QR codes or Host-side ADB bridges.
+            </p>
+          </div>
         </div>
         
         <button
@@ -184,7 +193,7 @@ export default function DeviceRegister() {
               {detectedDevices.length === 0 ? (
                 <div className="flex flex-col items-center justify-center p-8 bg-black/30 rounded-xl border border-white/[0.02] text-center space-y-3">
                   <Smartphone className="w-8 h-8 text-gray-700" />
-                  <div className="text-[10px] text-gray-500 font-mono">
+                  <div className="text-[0.625rem] text-gray-500 font-mono">
                     No USB-ADB devices found.<br/>
                     Click "Scan USB Devices" above or ensure USB Debugging is enabled.
                   </div>
@@ -210,7 +219,7 @@ export default function DeviceRegister() {
                       <div className="flex justify-between items-start">
                         <div className="flex items-center gap-2">
                           <Smartphone className={`w-4 h-4 ${isSelected ? 'text-cyan-400' : 'text-gray-400'}`} />
-                          <span className="text-xs font-bold text-white truncate max-w-[120px]">{device.model}</span>
+                          <span className="text-xs font-bold text-white truncate max-w-28">{device.model}</span>
                         </div>
                         {isBridgeRunning && (
                           <span className="flex h-2 w-2 relative">
@@ -220,10 +229,10 @@ export default function DeviceRegister() {
                         )}
                       </div>
 
-                      <div className="grid grid-cols-2 gap-y-1 text-[10px] font-mono text-gray-400">
+                      <div className="grid grid-cols-2 gap-y-1 text-[0.625rem] font-mono text-gray-400">
                         <span>Android:</span> <span className="text-white">{device.androidVersion} (API {device.sdkLevel})</span>
                         <span>Arch:</span> <span className="text-white">{device.abi}</span>
-                        <span>Serial:</span> <span className="text-gray-500 truncate max-w-[95px]">{device.serial}</span>
+                        <span>Serial:</span> <span className="text-gray-500 truncate max-w-24">{device.serial}</span>
                       </div>
 
                       {/* Onboarding triggers */}
@@ -234,7 +243,7 @@ export default function DeviceRegister() {
                               e.stopPropagation();
                               toggleAgent(device);
                             }}
-                            className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-[9px] font-mono font-bold transition-all ${
+                            className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-[0.5625rem] font-mono font-bold transition-all ${
                               isBridgeRunning 
                                 ? 'bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20' 
                                 : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/20'
@@ -259,7 +268,7 @@ export default function DeviceRegister() {
                               handleProvision(device);
                             }}
                             disabled={isProvisioning}
-                            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-[9px] font-mono font-bold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 hover:bg-cyan-500/20 transition-all disabled:opacity-50"
+                            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-[0.5625rem] font-mono font-bold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 hover:bg-cyan-500/20 transition-all disabled:opacity-50"
                           >
                             <Download className="w-3 h-3" />
                             AUTO-SETUP
@@ -291,7 +300,7 @@ export default function DeviceRegister() {
                   }`}
                 >
                   <div className="font-semibold text-xs">{getProfileLabel(prof)}</div>
-                  <div className="text-[9px] text-gray-500 mt-1">
+                  <div className="text-[0.5625rem] text-gray-500 mt-1">
                     {prof === 'modern' && 'Targeting Android 10, 11, 12, 13, and 14+.'}
                     {prof === 'legacy' && 'Targeting Android 7, 8, and 9.'}
                     {prof === 'x86_64' && 'Targeting x86/x86_64 virtual emulator images.'}
@@ -306,7 +315,7 @@ export default function DeviceRegister() {
         <div className="lg:col-span-2 space-y-6">
           
           {selectedDevice ? (
-            <div className="bg-[#10111a]/60 border border-white/5 rounded-2xl p-8 backdrop-blur-md space-y-6">
+            <div className="bg-[#10111a]/60 border border-white/5 rounded-2xl p-4 md:p-8 backdrop-blur-md space-y-6">
               <div className="border-b border-white/5 pb-3">
                 <h3 className="text-xs font-bold text-gray-300 uppercase tracking-widest">
                   3. Onboarding Portal for {selectedDevice.model}
@@ -316,25 +325,25 @@ export default function DeviceRegister() {
               <div className="flex flex-col md:flex-row gap-8 items-center">
                 
                 {/* Provisioning Status Visualizer */}
-                <div className="flex-shrink-0 bg-[#0b0c15] p-6 rounded-2xl border border-white/5 shadow-inner w-full md:w-[220px] h-[220px] flex flex-col items-center justify-center text-center space-y-3">
+                <div className="flex-shrink-0 bg-[#0b0c15] p-6 rounded-2xl border border-white/5 shadow-inner w-full md:w-56 h-56 flex flex-col items-center justify-center text-center space-y-3">
                   {isProvisioning ? (
                     <>
                       <Loader2 className="w-10 h-10 text-cyan-400 animate-spin" />
-                      <div className="text-[10px] text-cyan-300 font-mono">Provisioning Workspace...</div>
+                      <div className="text-[0.625rem] text-cyan-300 font-mono">Provisioning Workspace...</div>
                     </>
                   ) : provisionStatus.startsWith('Success') ? (
                      <>
                        <CheckCircle2 className="w-10 h-10 text-emerald-400" />
-                       <div className="text-[10px] text-emerald-300 font-mono">Device Preconfigured!</div>
+                       <div className="text-[0.625rem] text-emerald-300 font-mono">Device Preconfigured!</div>
                      </>
                   ) : (
                     <>
                       <Smartphone className="w-10 h-10 text-cyan-500/50" />
-                      <div className="text-[10px] text-gray-500 font-mono">Ready for USB Setup</div>
+                      <div className="text-[0.625rem] text-gray-500 font-mono">Ready for USB Setup</div>
                     </>
                   )}
                   {provisionStatus && (
-                    <div className="text-[9px] text-gray-400 font-mono max-w-[180px] truncate">{provisionStatus}</div>
+                    <div className="text-[0.5625rem] text-gray-400 font-mono max-w-44 truncate">{provisionStatus}</div>
                   )}
                 </div>
 
@@ -366,14 +375,14 @@ export default function DeviceRegister() {
               </div>
             </div>
           ) : (
-            <div className="bg-[#10111a]/60 border border-white/5 rounded-2xl p-8 backdrop-blur-md text-center py-20 space-y-3">
+            <div className="bg-[#10111a]/60 border border-white/5 rounded-2xl p-4 md:p-8 backdrop-blur-md text-center py-20 space-y-3">
               <Smartphone className="w-12 h-12 text-gray-700 mx-auto" />
                <p className="text-sm text-gray-400">Please scan for connected USB devices and select a handset to begin onboarding.</p>
             </div>
           )}
 
           {/* BLUEPRINT STEPS */}
-          <div className="bg-[#10111a]/60 border border-white/5 rounded-2xl p-8 backdrop-blur-md space-y-6">
+          <div className="bg-[#10111a]/60 border border-white/5 rounded-2xl p-4 md:p-8 backdrop-blur-md space-y-6">
             <h3 className="text-xs font-bold text-gray-300 uppercase tracking-widest pb-3 border-b border-white/5">
               4. Registration Blueprint & Prerequisites
             </h3>
@@ -386,7 +395,7 @@ export default function DeviceRegister() {
                   </div>
                   <h4 className="font-bold text-xs text-white">Enable Developer Options</h4>
                 </div>
-                <p className="text-[11px] text-gray-400 leading-relaxed pl-9">
+                <p className="text-[0.6875rem] text-gray-400 leading-relaxed pl-9">
                   On the mobile device, navigate to **Settings** &gt; **About Phone** and tap **Build Number** 7 times. Open **Developer Options** and enable **USB Debugging**.
                 </p>
               </div>
@@ -398,7 +407,7 @@ export default function DeviceRegister() {
                   </div>
                   <h4 className="font-bold text-xs text-white">Trust Host Machine</h4>
                 </div>
-                <p className="text-[11px] text-gray-400 leading-relaxed pl-9">
+                <p className="text-[0.6875rem] text-gray-400 leading-relaxed pl-9">
                   Connect the phone to the host PC via USB. On the phone, accept the authorization prompt to **Allow USB Debugging** from this computer.
                 </p>
               </div>
@@ -410,7 +419,7 @@ export default function DeviceRegister() {
                   </div>
                   <h4 className="font-bold text-xs text-white">Configure Battery Settings</h4>
                 </div>
-                <p className="text-[11px] text-gray-400 leading-relaxed pl-9">
+                <p className="text-[0.6875rem] text-gray-400 leading-relaxed pl-9">
                   If using Termux Local mode, configure the Termux app battery usage setting to **Unrestricted** to prevent the background telemetry loop from going to sleep.
                 </p>
               </div>
@@ -422,7 +431,7 @@ export default function DeviceRegister() {
                   </div>
                   <h4 className="font-bold text-xs text-white">Verify Telemetry Stream</h4>
                 </div>
-                <p className="text-[11px] text-gray-400 leading-relaxed pl-9">
+                <p className="text-[0.6875rem] text-gray-400 leading-relaxed pl-9">
                   Once onboarding is complete (either Termux setup script finishes or host bridge starts), navigate to the **Security Monitor** view to inspect telemetry alerts.
                 </p>
               </div>

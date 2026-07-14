@@ -63,7 +63,7 @@ export default function ThreatDrawer({ drawerOpen, setDrawerOpen, selectedThreat
     <>
       {/* SLIDE-OVER FORENSIC Incident Drawer (SPACIOUS DRAWER) */}
       <div 
-        className={`fixed inset-y-0 right-0 w-[580px] bg-[#0c0d17]/95 border-l border-cyan-500/20 shadow-[-10px_0_30px_rgba(0,0,0,0.8)] z-50 flex flex-col transition-transform duration-300 ease-in-out ${
+        className={`fixed inset-y-0 right-0 w-full md:max-w-xl bg-[#0c0d17]/95 border-l border-cyan-500/20 shadow-[-10px_0_30px_rgba(0,0,0,0.8)] z-50 flex flex-col transition-transform duration-300 ease-in-out ${
           drawerOpen ? 'translate-x-0' : 'translate-x-full'
         }`}
       >
@@ -73,7 +73,7 @@ export default function ThreatDrawer({ drawerOpen, setDrawerOpen, selectedThreat
               <Activity className="w-5 h-5 animate-pulse" />
               Forensic Incident Report
             </h3>
-            <p className="text-[10px] text-gray-500 uppercase tracking-widest mt-0.5">Auditing Security Telemetry</p>
+            <p className="text-[0.625rem] text-gray-500 uppercase tracking-widest mt-0.5">Auditing Security Telemetry</p>
           </div>
           <button 
             onClick={() => setDrawerOpen(false)}
@@ -94,11 +94,11 @@ export default function ThreatDrawer({ drawerOpen, setDrawerOpen, selectedThreat
               <div className="bg-[#11121d] border border-white/5 rounded-2xl p-5 space-y-3.5 text-xs">
                 <div className="flex justify-between items-center py-1">
                   <span className="text-gray-400">Target Application Package:</span>
-                  <span className="font-semibold text-white max-w-[240px] truncate">{selectedThreat.app_package}</span>
+                  <span className="font-semibold text-white max-w-60 truncate">{selectedThreat.app_package}</span>
                 </div>
                 <div className="flex justify-between items-center py-1 border-t border-white/[0.03]">
                   <span className="text-gray-400">Assigned Threat Level:</span>
-                  <span className={`px-2.5 py-0.5 rounded-full text-[9px] font-extrabold uppercase tracking-wide border ${getThreatColorClass(selectedThreat.threat_level)}`}>
+                  <span className={`px-2.5 py-0.5 rounded-full text-[0.5625rem] font-extrabold uppercase tracking-wide border ${getThreatColorClass(selectedThreat.threat_level)}`}>
                     {selectedThreat.threat_level}
                   </span>
                 </div>
@@ -109,7 +109,7 @@ export default function ThreatDrawer({ drawerOpen, setDrawerOpen, selectedThreat
                 
                 {/* Behavioural Sub-score indicators */}
                 <div className="mt-4 pt-4 border-t border-white/5 space-y-2">
-                  <span className="text-gray-400 text-[10px] font-extrabold uppercase tracking-wider block">Behavioural Sub-score Indicators:</span>
+                  <span className="text-gray-400 text-[0.625rem] font-extrabold uppercase tracking-wider block">Behavioural Sub-score Indicators:</span>
                   <div className="space-y-2">
                     {(() => {
                       const rules = Array.isArray(selectedThreat.triggered_rules) 
@@ -118,8 +118,8 @@ export default function ThreatDrawer({ drawerOpen, setDrawerOpen, selectedThreat
                       return rules.map((rule, idx) => (
                         <div key={idx} className="flex justify-between items-start bg-white/[0.02] px-3.5 py-2.5 rounded-xl border border-white/5 hover:border-white/10 transition-colors">
                           <div>
-                            <span className="text-[10px] text-cyan-500 font-bold uppercase block">{rule.tactic}</span>
-                            <span className="text-[11px] text-gray-300 mt-0.5 block">{rule.description}</span>
+                            <span className="text-[0.625rem] text-cyan-500 font-bold uppercase block">{rule.tactic}</span>
+                            <span className="text-[0.6875rem] text-gray-300 mt-0.5 block">{rule.description}</span>
                           </div>
                           <span className="font-mono text-cyan-400 font-bold ml-4">+{rule.points}</span>
                         </div>
@@ -130,7 +130,7 @@ export default function ThreatDrawer({ drawerOpen, setDrawerOpen, selectedThreat
                         ? selectedThreat.modifiers 
                         : JSON.parse(selectedThreat.modifiers || '[]');
                       return modifiers.map((mod, idx) => (
-                        <div key={idx} className="text-[10px] text-emerald-400 bg-emerald-500/5 border border-emerald-500/10 px-3 py-1.5 rounded-lg flex items-center gap-1.5">
+                        <div key={idx} className="text-[0.625rem] text-emerald-400 bg-emerald-500/5 border border-emerald-500/10 px-3 py-1.5 rounded-lg flex items-center gap-1.5">
                           🛡️ {mod}
                         </div>
                       ));
@@ -145,7 +145,7 @@ export default function ThreatDrawer({ drawerOpen, setDrawerOpen, selectedThreat
               <h4 className="text-xs font-bold text-gray-300 uppercase tracking-widest border-l-2 border-cyan-400 pl-2">
                 2. Value / Observed Telemetry
               </h4>
-              <div className="bg-[#05060b] border border-white/5 rounded-2xl p-5 font-mono text-[11px] text-cyan-400/90 leading-relaxed space-y-3">
+              <div className="bg-[#05060b] border border-white/5 rounded-2xl p-5 font-mono text-[0.6875rem] text-cyan-400/90 leading-relaxed space-y-3">
                 {(() => {
                   let telemetry = selectedThreat.observed_telemetry;
                   if (typeof telemetry === 'string') {
@@ -194,9 +194,9 @@ export default function ThreatDrawer({ drawerOpen, setDrawerOpen, selectedThreat
                       <span className="text-gray-500 block self-start">ACCESSIBILITY THREATS:</span>
                       <span className="text-gray-400 font-sans block self-start">
                         {telemetry.enabled_accessibility_services && telemetry.enabled_accessibility_services.length > 0 ? (
-                          <ul className="list-disc list-inside text-red-400 text-[10px] space-y-1 leading-normal">
+                          <ul className="list-disc list-inside text-red-400 text-[0.625rem] space-y-1 leading-normal">
                             {telemetry.enabled_accessibility_services.map((srv, idx) => (
-                              <li key={idx} className="truncate max-w-[200px]">{srv.split('/').pop()}</li>
+                              <li key={idx} className="truncate max-w-48">{srv.split('/').pop()}</li>
                             ))}
                           </ul>
                         ) : 'None'}
@@ -230,14 +230,14 @@ export default function ThreatDrawer({ drawerOpen, setDrawerOpen, selectedThreat
                               href={`https://attack.mitre.org/techniques/${mapping.mitre}`} 
                               target="_blank" 
                               rel="noopener noreferrer"
-                              className="inline-flex items-center gap-1.5 text-[10px] bg-cyan-500/10 text-cyan-300 px-3 py-1 rounded-full border border-cyan-500/20 hover:bg-cyan-500/20 transition-all font-semibold"
+                              className="inline-flex items-center gap-1.5 text-[0.625rem] bg-cyan-500/10 text-cyan-300 px-3 py-1 rounded-full border border-cyan-500/20 hover:bg-cyan-500/20 transition-all font-semibold"
                             >
                               MITRE {mapping.mitre}
                               <ExternalLink className="w-3 h-3" />
                             </a>
                           )}
                         </div>
-                        <p className="text-gray-400 leading-relaxed text-[11px] font-sans">
+                        <p className="text-gray-400 leading-relaxed text-[0.6875rem] font-sans">
                           {mapping.desc}
                         </p>
                       </div>

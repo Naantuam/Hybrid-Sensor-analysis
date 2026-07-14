@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { 
-  AlertTriangle, Terminal, Grid, Smartphone, Database, Shield 
+  AlertTriangle, Terminal, Grid, Smartphone, Database, Shield, Menu
 } from 'lucide-react';
 import KPIStats from './KPIStats';
 import LiveConsole from './LiveConsole';
@@ -12,27 +12,37 @@ export default function ThreatMonitor({
   selectedThreat,
   handleThreatClick,
   liveLogs,
-  getThreatColorClass
+  getThreatColorClass,
+  toggleSidebar
 }) {
   const [activeTab, setActiveTab] = useState('threats'); // 'threats', 'live', 'sessions'
 
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden z-10">
       {/* HEADER BAR */}
-      <header className="px-8 py-5 border-b border-white/5 bg-[#07080d]/60 backdrop-blur-md flex justify-between items-center flex-shrink-0">
-        <div>
-          <h2 className="text-lg font-bold flex items-center gap-2 font-outfit text-white">
-            {selectedSession ? `📱 ${selectedSession.device_id.replace(/_/g, ' ')}` : 'No Device Selected'}
-          </h2>
-          <p className="text-xs text-gray-400 mt-0.5">
-            {selectedSession 
-              ? `Android ${selectedSession.os_version} (API ${selectedSession.api_level}) | Network SSID: ${selectedSession.ssid || 'Cellular'}`
-              : 'Select an active device session to begin data audits'}
-          </p>
+      <header className="px-4 md:px-8 py-4 md:py-5 border-b border-white/5 bg-[#07080d]/60 backdrop-blur-md flex flex-col md:flex-row justify-between items-start md:items-center gap-4 md:gap-0 flex-shrink-0">
+        <div className="flex items-center gap-3">
+          {/* Hamburger Menu Toggler on Mobile */}
+          <button
+            onClick={toggleSidebar}
+            className="md:hidden p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/5 flex-shrink-0"
+          >
+            <Menu className="w-5 h-5" />
+          </button>
+          <div>
+            <h2 className="text-lg font-bold flex items-center gap-2 font-outfit text-white">
+              {selectedSession ? `📱 ${selectedSession.device_id.replace(/_/g, ' ')}` : 'No Device Selected'}
+            </h2>
+            <p className="text-xs text-gray-400 mt-0.5">
+              {selectedSession 
+                ? `Android ${selectedSession.os_version} (API ${selectedSession.api_level}) | Network SSID: ${selectedSession.ssid || 'Cellular'}`
+                : 'Select an active device session to begin data audits'}
+            </p>
+          </div>
         </div>
 
         {/* TAB NAVIGATION */}
-        <div className="flex bg-white/[0.02] border border-white/5 rounded-xl p-1 gap-1">
+        <div className="flex w-full md:w-auto bg-white/[0.02] border border-white/5 rounded-xl p-1 gap-1 overflow-x-auto">
           <button
             onClick={() => setActiveTab('threats')}
             className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all duration-200 ${
@@ -70,7 +80,7 @@ export default function ThreatMonitor({
       </header>
 
       {/* WORKSPACE CONTENT */}
-      <main className="flex-1 overflow-y-auto p-8 relative">
+      <main className="flex-1 overflow-y-auto p-4 md:p-8 relative">
         {/* TAB 1: THREATS CENTER */}
         {activeTab === 'threats' && (
           <div className="space-y-8 animate-fadeIn">
@@ -78,7 +88,7 @@ export default function ThreatMonitor({
             <KPIStats kpis={kpis} selectedSession={selectedSession} />
 
             {/* THREAT ALERTS TABLES */}
-            <div className="bg-[#10111a]/60 border border-white/5 rounded-2xl p-8 backdrop-blur-md flex flex-col">
+            <div className="bg-[#10111a]/60 border border-white/5 rounded-2xl p-4 md:p-8 backdrop-blur-md flex flex-col">
               <div className="flex justify-between items-center mb-6 pb-4 border-b border-white/5">
                 <div>
                   <h3 className="font-extrabold font-outfit text-lg flex items-center gap-2 text-white">
@@ -99,7 +109,7 @@ export default function ThreatMonitor({
                 ) : (
                   <table className="w-full text-left text-xs border-collapse">
                     <thead>
-                      <tr className="text-gray-400 border-b border-white/5 uppercase text-[10px] tracking-widest font-bold">
+                      <tr className="text-gray-400 border-b border-white/5 uppercase text-[0.625rem] tracking-widest font-bold">
                         <th className="py-4 px-4">Audit Timestamp</th>
                         <th className="py-4 px-4">Target Application Package</th>
                         <th className="py-4 px-4">Assigned Severity</th>
@@ -117,16 +127,16 @@ export default function ThreatMonitor({
                               isSelected ? 'bg-cyan-500/10 text-cyan-400 font-semibold border-l-2 border-cyan-500' : ''
                             }`}
                           >
-                            <td className="py-4.5 px-4 whitespace-nowrap font-mono text-[11px] text-gray-400">
+                            <td className="py-4 px-4 whitespace-nowrap font-mono text-[0.6875rem] text-gray-400">
                               {new Date(alert.timestamp || alert.connected_at).toLocaleString()}
                             </td>
-                            <td className="py-4.5 px-4 font-semibold text-gray-300">{alert.app_package}</td>
-                            <td className="py-4.5 px-4">
-                              <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full border text-[9px] font-extrabold uppercase tracking-wide ${getThreatColorClass(alert.threat_level)}`}>
+                            <td className="py-4 px-4 font-semibold text-gray-300">{alert.app_package}</td>
+                            <td className="py-4 px-4">
+                              <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full border text-[0.5625rem] font-extrabold uppercase tracking-wide ${getThreatColorClass(alert.threat_level)}`}>
                                 {alert.threat_level}
                               </span>
                             </td>
-                            <td className="py-4.5 px-4 text-right font-extrabold font-mono text-cyan-400 text-sm">
+                            <td className="py-4 px-4 text-right font-extrabold font-mono text-cyan-400 text-sm">
                               {alert.score} pts
                             </td>
                           </tr>

@@ -3,7 +3,9 @@
 # stop_agent.sh - Termux Shutdown & Cleanup Trigger
 # =================================================================
 
-PID_FILE="/tmp/sensor_agent.pid"
+export PATH="/data/data/com.termux/files/usr/bin:$PATH"
+
+PID_FILE="/data/data/com.termux/files/home/hybrid-agent/sensor_agent.pid"
 
 echo "[*] Initializing shutdown sequence..."
 

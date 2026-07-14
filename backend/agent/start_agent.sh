@@ -7,7 +7,7 @@
 LOCAL_ENDPOINT=${1:-"ws://kali.local:4444"}
 CLOUD_ENDPOINT=${2:-"wss://your-railway-app.railway.app"}
 
-PID_FILE="/tmp/sensor_agent.pid"
+PID_FILE="/data/data/com.termux/files/home/hybrid-agent/sensor_agent.pid"
 
 # Check if agent is already running
 if [ -f "$PID_FILE" ]; then
@@ -28,7 +28,7 @@ termux-notification \
   --title "Hybrid Sensor Monitor" \
   --content "Active. Monitoring application sensor usage..." \
   --button1 "STOP AGENT" \
-  --button1-action "bash /data/data/com.termux/files/home/hybrid-agent/stop_agent.sh" \
+  --button1-action "/data/data/com.termux/files/usr/bin/bash /data/data/com.termux/files/home/hybrid-agent/stop_agent.sh" \
   --priority high \
   --ongoing
 

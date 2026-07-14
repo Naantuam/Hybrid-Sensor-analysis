@@ -10,13 +10,13 @@ export default function LiveConsole({ liveLogs }) {
   }, [liveLogs]);
 
   return (
-    <div className="bg-[#05060b] border border-white/5 rounded-2xl p-6 backdrop-blur-md h-[calc(100vh-210px)] flex flex-col overflow-hidden animate-fadeIn">
+    <div className="bg-[#05060b] border border-white/5 rounded-2xl p-6 backdrop-blur-md h-[calc(100vh-13.125rem)] flex flex-col overflow-hidden animate-fadeIn">
       <div className="flex justify-between items-center mb-4 pb-3 border-b border-white/5">
         <div className="flex items-center gap-2">
           <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping" />
           <h3 className="font-extrabold font-outfit text-base text-white">Live System Logs</h3>
         </div>
-        <span className="text-[10px] font-mono text-gray-500 uppercase tracking-widest">ws_broker_active</span>
+        <span className="text-[0.625rem] font-mono text-gray-500 uppercase tracking-widest">ws_broker_active</span>
       </div>
       
       <div 

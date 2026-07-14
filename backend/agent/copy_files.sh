@@ -24,8 +24,13 @@ adb shell input text "chmod +x /data/data/com.termux/files/home/hybrid-agent/*.s
 adb shell input keyevent 66
 sleep 0.5
 
-echo "[*] Launching telemetry agent using absolute Termux path..."
-adb shell input text "/data/data/com.termux/files/usr/bin/bash /data/data/com.termux/files/home/hybrid-agent/start_agent.sh"
+echo "[*] Transitioning to agent directory..."
+adb shell input text "cd /data/data/com.termux/files/home/hybrid-agent"
+adb shell input keyevent 66
+sleep 0.5
+
+echo "[*] Launching telemetry agent..."
+adb shell input text "bash start_agent.sh"
 adb shell input keyevent 66
 
 echo "[+] Execution complete! Check your dashboard."

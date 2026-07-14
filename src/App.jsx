@@ -30,6 +30,9 @@ export default function App() {
   const wsBroker = useRef(null);
   const selectedSessionRef = useRef(null);
 
+  // Mobile Sidebar Toggle State
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+
   // Keep selectedSessionRef updated with the latest state
   useEffect(() => {
     selectedSessionRef.current = selectedSession;
@@ -56,6 +59,7 @@ export default function App() {
     setSelectedSession(session);
     setSelectedThreat(null);
     setDrawerOpen(false);
+    setIsMobileSidebarOpen(false); // Close mobile drawer on selection
     try {
       const statsRes = await fetch(`/api/sessions/${session.id}/stats`);
       if (statsRes.ok) {
@@ -138,10 +142,22 @@ export default function App() {
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-[#07080d] text-[#f3f4f6] font-sans antialiased">
-      <div className="absolute top-[-10%] left-[-10%] w-[600px] h-[600px] bg-cyan-500/5 rounded-full blur-[160px] pointer-events-none z-0" />
-      <div className="absolute bottom-[-10%] right-[-10%] w-[600px] h-[600px] bg-purple-500/5 rounded-full blur-[160px] pointer-events-none z-0" />
+      {/* Background radial highlights using standard spacing/sizes */}
+      <div className="absolute top-[-10%] left-[-10%] w-96 h-96 md:w-144 md:h-144 bg-cyan-500/5 rounded-full blur-3xl pointer-events-none z-0" />
+      <div className="absolute bottom-[-10%] right-[-10%] w-96 h-96 md:w-144 md:h-144 bg-purple-500/5 rounded-full blur-3xl pointer-events-none z-0" />
 
-      <div className="w-[300px] border-r border-white/5 bg-[#0a0b14]/90 flex flex-col z-10 flex-shrink-0">
+      {/* Mobile Drawer Overlay Backdrop */}
+      {isMobileSidebarOpen && (
+        <div 
+          onClick={() => setIsMobileSidebarOpen(false)}
+          className="fixed inset-0 bg-black/60 backdrop-blur-xs z-20 md:hidden"
+        />
+      )}
+
+      {/* Sidebar navigation drawer */}
+      <div className={`fixed md:relative inset-y-0 left-0 w-72 border-r border-white/5 bg-[#0a0b14]/90 flex flex-col z-30 transition-transform duration-300 transform md:translate-x-0 ${
+        isMobileSidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
+      } flex-shrink-0`}>
         <div className="p-6 border-b border-white/5 bg-gradient-to-r from-cyan-500/5 to-transparent">
           <div className="flex items-center gap-3">
             <div className="p-2.5 bg-cyan-500/10 rounded-xl text-cyan-400">
@@ -151,14 +167,17 @@ export default function App() {
               <h1 className="font-outfit font-extrabold text-base bg-gradient-to-r from-cyan-400 to-blue-500 bg-clip-text text-transparent tracking-wide">
                 HYBRID MONITOR
               </h1>
-              <p className="text-[9px] text-gray-500 tracking-wider uppercase font-semibold">Forensic Threat Auditing</p>
+              <p className="text-[0.5625rem] text-gray-500 tracking-wider uppercase font-semibold">Forensic Threat Auditing</p>
             </div>
           </div>
         </div>
 
         <div className="p-4 border-b border-white/5 space-y-2">
           <button
-            onClick={() => setCurrentView('onboarding')}
+            onClick={() => {
+              setCurrentView('onboarding');
+              setIsMobileSidebarOpen(false);
+            }}
             className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold transition-all duration-200 ${
               currentView === 'onboarding' 
                 ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/15' 
@@ -169,7 +188,10 @@ export default function App() {
             Onboarding & Devices
           </button>
           <button
-            onClick={() => setCurrentView('telemetry')}
+            onClick={() => {
+              setCurrentView('telemetry');
+              setIsMobileSidebarOpen(false);
+            }}
             className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold transition-all duration-200 ${
               currentView === 'telemetry' 
                 ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/15' 
@@ -183,7 +205,7 @@ export default function App() {
 
         {currentView === 'telemetry' && (
           <div className="flex-1 overflow-y-auto p-4 space-y-3">
-            <div className="text-[10px] text-gray-500 font-bold uppercase tracking-widest px-2 mb-2 font-outfit">Connected Devices</div>
+            <div className="text-[0.625rem] text-gray-500 font-bold uppercase tracking-widest px-2 mb-2 font-outfit">Connected Devices</div>
             {sessions.length === 0 ? (
               <div className="text-center py-10 text-gray-500 text-xs italic">
                 No devices registered.
@@ -205,19 +227,19 @@ export default function App() {
                     <div className="flex justify-between items-start mb-2">
                       <div className="flex items-center gap-2">
                         <Smartphone className="w-4 h-4 text-cyan-400" />
-                        <h3 className="font-semibold text-xs truncate max-w-[140px]">
+                        <h3 className="font-semibold text-xs truncate max-w-36">
                           {session.device_id.replace(/_/g, ' ')}
                         </h3>
                       </div>
-                      <span className="text-[9px] bg-white/5 px-2 py-0.5 rounded font-mono text-gray-400">#{session.id}</span>
+                      <span className="text-[0.5625rem] bg-white/5 px-2 py-0.5 rounded font-mono text-gray-400">#{session.id}</span>
                     </div>
-                    <p className="text-[11px] text-gray-400 font-mono">Android {session.os_version || 'N/A'} (API {session.api_level || 'N/A'})</p>
+                    <p className="text-[0.6875rem] text-gray-400 font-mono">Android {session.os_version || 'N/A'} (API {session.api_level || 'N/A'})</p>
                     <div className="flex items-center justify-between mt-3 pt-2 border-t border-white/[0.03]">
                       <div className="flex items-center gap-1.5">
                         <div className={`w-1.5 h-1.5 rounded-full ${isOnline ? 'bg-emerald-500 shadow-[0_0_8px_#10b981]' : 'bg-gray-500'}`} />
-                        <span className="text-[9px] text-gray-400 font-medium">{isOnline ? 'ONLINE' : 'OFFLINE'}</span>
+                        <span className="text-[0.5625rem] text-gray-400 font-medium">{isOnline ? 'ONLINE' : 'OFFLINE'}</span>
                       </div>
-                      <span className="text-[9px] text-gray-500 font-mono">{new Date(session.connected_at).toLocaleDateString()}</span>
+                      <span className="text-[0.5625rem] text-gray-500 font-mono">{new Date(session.connected_at).toLocaleDateString()}</span>
                     </div>
                   </div>
                 );
@@ -237,9 +259,10 @@ export default function App() {
             handleThreatClick={handleThreatClick}
             liveLogs={liveLogs}
             getThreatColorClass={getThreatColorClass}
+            toggleSidebar={() => setIsMobileSidebarOpen(prev => !prev)}
           />
         ) : (
-          <DeviceRegister />
+          <DeviceRegister toggleSidebar={() => setIsMobileSidebarOpen(prev => !prev)} />
         )}
       </div>
 
