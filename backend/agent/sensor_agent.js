@@ -267,7 +267,7 @@ function startTelemetryLoop() {
     if (batterySaverActive) return;
 
     clearInterval(telemetryInterval);
-    telemetryInterval = setInterval(async () => {
+    const runIteration = async () => {
         try {
             // Run system dumpsys diagnostics concurrently using definitions in commands.js
             const [
@@ -355,6 +355,9 @@ function startTelemetryLoop() {
         } catch (e) {
             console.log('[!] Error in telemetry loop:', e.message);
         }
-    }, 3000);
+    };
+
+    runIteration();
+    telemetryInterval = setInterval(runIteration, 3000);
 }
 

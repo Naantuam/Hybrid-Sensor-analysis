@@ -105,9 +105,20 @@ if [ "$HAS_AGENT" = "yes" ]; then
     adb -s "$SERIAL" push "$DYNAMIC_START" /data/data/com.termux/files/home/hybrid-agent/start_agent.sh
     adb -s "$SERIAL" shell "chmod +x /data/data/com.termux/files/home/hybrid-agent/*.sh"
     
+    # Open Termux and run the start agent command on screen
+    echo "[*] Opening Termux app..."
+    adb -s "$SERIAL" shell monkey -p com.termux -c android.intent.category.LAUNCHER 1
+    sleep 2
+
+    echo "[*] Launching Hybrid Telemetry Agent..."
+    adb -s "$SERIAL" shell input text "clear"
+    adb -s "$SERIAL" shell input keyevent 66
+    sleep 0.5
+    adb -s "$SERIAL" shell input text "cd ~/hybrid-agent && bash start_agent.sh"
+    adb -s "$SERIAL" shell input keyevent 66
+    
     echo "================================================="
-    echo "[+] Device re-registered successfully!"
-    echo "[*] Start the agent on the phone using: cd ~/hybrid-agent && bash start_agent.sh"
+    echo "[+] Device re-registered and agent started successfully!"
     echo "================================================="
     rm -f "$DYNAMIC_START"
     exit 0
@@ -139,9 +150,20 @@ if [ -f "$BACKUP_FILE" ]; then
     adb -s "$SERIAL" push "$DYNAMIC_START" /data/data/com.termux/files/home/hybrid-agent/start_agent.sh
     adb -s "$SERIAL" shell "chmod +x /data/data/com.termux/files/home/hybrid-agent/*.sh"
 
+    # Open Termux and run the start agent command on screen
+    echo "[*] Opening Termux app..."
+    adb -s "$SERIAL" shell monkey -p com.termux -c android.intent.category.LAUNCHER 1
+    sleep 2
+
+    echo "[*] Launching Hybrid Telemetry Agent..."
+    adb -s "$SERIAL" shell input text "clear"
+    adb -s "$SERIAL" shell input keyevent 66
+    sleep 0.5
+    adb -s "$SERIAL" shell input text "cd ~/hybrid-agent && bash start_agent.sh"
+    adb -s "$SERIAL" shell input keyevent 66
+
     echo "================================================="
-    echo "[+] Device successfully preconfigured!"
-    echo "[*] Start the agent on the phone using: cd ~/hybrid-agent && bash start_agent.sh"
+    echo "[+] Device successfully preconfigured and agent started!"
     echo "================================================="
 else
     echo "[-] No preconfigured environment snapshot (.tar.gz) found on server."
