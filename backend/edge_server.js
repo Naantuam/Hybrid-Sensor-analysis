@@ -658,6 +658,24 @@ app.post('/api/agent/start', (req, res) => {
     });
 
     runningAgents.set(serial, agentProcess);
+
+    // Automatically trigger Termux agent execution on the mobile device over USB
+    console.log(`[*] Remotely launching Termux agent on handset: ${serial}`);
+    exec(`adb -s ${serial} shell monkey -p com.termux -c android.intent.category.LAUNCHER 1`, (err) => {
+        if (!err) {
+            setTimeout(() => {
+                // Split command execution sequence for reliability
+                exec(`adb -s ${serial} shell input text "cd /data/data/com.termux/files/home/hybrid-agent" && adb -s ${serial} shell input keyevent 66`, (err2) => {
+                    if (!err2) {
+                        setTimeout(() => {
+                            exec(`adb -s ${serial} shell input text "bash start_agent.sh" && adb -s ${serial} shell input keyevent 66`);
+                        }, 500);
+                    }
+                });
+            }, 2000);
+        }
+    });
+
     res.json({ status: "success", message: `Agent successfully started for device ${serial}` });
 });
 
@@ -676,6 +694,17 @@ app.post('/api/agent/stop', (req, res) => {
     console.log(`[*] Killing host-side ADB bridge agent for device: ${serial}`);
     agentProcess.kill();
     runningAgents.delete(serial);
+
+    // Automatically trigger Termux agent shutdown on the mobile device over USB
+    console.log(`[*] Remotely stopping Termux agent on handset: ${serial}`);
+    exec(`adb -s ${serial} shell monkey -p com.termux -c android.intent.category.LAUNCHER 1`, (err) => {
+        if (!err) {
+            setTimeout(() => {
+                exec(`adb -s ${serial} shell input text "bash stop_agent.sh" && adb -s ${serial} shell input keyevent 66`);
+            }, 2000);
+        }
+    });
+
     res.json({ status: "success", message: `Agent successfully stopped for device ${serial}` });
 });
 
