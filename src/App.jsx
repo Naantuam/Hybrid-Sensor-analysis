@@ -60,6 +60,7 @@ export default function App() {
     setSelectedThreat(null);
     setDrawerOpen(false);
     setIsMobileSidebarOpen(false); // Close mobile drawer on selection
+    setCurrentView('telemetry');   // Automatically route to the telemetry charts page
     try {
       const statsRes = await fetch(`/api/sessions/${session.id}/stats`);
       if (statsRes.ok) {
@@ -73,6 +74,24 @@ export default function App() {
       }
     } catch (err) {
       console.error('[!] Error loading session details:', err);
+    }
+  };
+
+  // 2b. Refresh details silently without resetting UI selection or drawer states
+  const refreshSessionData = async (sessionId) => {
+    try {
+      const statsRes = await fetch(`/api/sessions/${sessionId}/stats`);
+      if (statsRes.ok) {
+        const stats = await statsRes.json();
+        setKpis(stats);
+      }
+      const threatsRes = await fetch(`/api/sessions/${sessionId}/threats`);
+      if (threatsRes.ok) {
+        const threatData = await threatsRes.json();
+        setThreats(threatData);
+      }
+    } catch (err) {
+      console.error('[!] Error refreshing session details:', err);
     }
   };
 
@@ -98,7 +117,7 @@ export default function App() {
             addLiveLog(alert.threat_level, `Security Warning: "${alert.app_package}" triggered Score: ${alert.score}`);
             const currentSelected = selectedSessionRef.current;
             if (currentSelected && currentSelected.id === alert.session_id) {
-              selectSession(currentSelected);
+              refreshSessionData(currentSelected.id);
             }
           } else if (data.event_type === "active_sessions_sync") {
             setOnlineSessions(new Set(data.sessions));
@@ -203,50 +222,62 @@ export default function App() {
           </button>
         </div>
 
-        {currentView === 'telemetry' && (
-          <div className="flex-1 overflow-y-auto p-4 space-y-3">
-            <div className="text-[0.625rem] text-gray-500 font-bold uppercase tracking-widest px-2 mb-2 font-outfit">Connected Devices</div>
-            {sessions.length === 0 ? (
-              <div className="text-center py-10 text-gray-500 text-xs italic">
-                No devices registered.
-              </div>
-            ) : (
-              sessions.map(session => {
-                const isOnline = onlineSessions.has(session.id);
-                const isActive = selectedSession?.id === session.id;
-                return (
-                  <div
-                    key={session.id}
-                    onClick={() => selectSession(session)}
-                    className={`p-4 rounded-xl border transition-all duration-300 cursor-pointer ${
-                      isActive 
-                        ? 'bg-cyan-500/5 border-cyan-500/30 shadow-[0_4px_20px_rgba(6,182,212,0.05)]' 
-                        : 'bg-white/[0.01] border-white/5 hover:bg-white/[0.03] hover:border-white/10'
-                    }`}
-                  >
-                    <div className="flex justify-between items-start mb-2">
-                      <div className="flex items-center gap-2">
-                        <Smartphone className="w-4 h-4 text-cyan-400" />
-                        <h3 className="font-semibold text-xs truncate max-w-36">
-                          {session.device_id.replace(/_/g, ' ')}
-                        </h3>
-                      </div>
-                      <span className="text-[0.5625rem] bg-white/5 px-2 py-0.5 rounded font-mono text-gray-400">#{session.id}</span>
+        <div className="flex-1 overflow-y-auto p-4 space-y-3">
+          <div className="text-[0.625rem] text-gray-500 font-bold uppercase tracking-widest px-2 mb-2 font-outfit">Connected Devices</div>
+          {sessions.length === 0 ? (
+            <div className="text-center py-10 text-gray-500 text-xs italic">
+              No devices registered.
+            </div>
+          ) : (
+            sessions.map(session => {
+              const isOnline = onlineSessions.has(session.id);
+              const isActive = selectedSession?.id === session.id;
+              return (
+                <div
+                  key={session.id}
+                  onClick={() => selectSession(session)}
+                  className={`p-4 rounded-xl border transition-all duration-300 cursor-pointer ${
+                    isActive 
+                      ? 'bg-cyan-500/5 border-cyan-500/30 shadow-[0_4px_20px_rgba(6,182,212,0.05)]' 
+                      : 'bg-white/[0.01] border-white/5 hover:bg-white/[0.03] hover:border-white/10'
+                  }`}
+                >
+                  <div className="flex justify-between items-start mb-2">
+                    <div className="flex items-center gap-2">
+                      <Smartphone className="w-4 h-4 text-cyan-400" />
+                      <h3 className="font-semibold text-xs truncate max-w-36">
+                        {session.device_id.replace(/_/g, ' ')}
+                      </h3>
                     </div>
-                    <p className="text-[0.6875rem] text-gray-400 font-mono">Android {session.os_version || 'N/A'} (API {session.api_level || 'N/A'})</p>
-                    <div className="flex items-center justify-between mt-3 pt-2 border-t border-white/[0.03]">
-                      <div className="flex items-center gap-1.5">
-                        <div className={`w-1.5 h-1.5 rounded-full ${isOnline ? 'bg-emerald-500 shadow-[0_0_8px_#10b981]' : 'bg-gray-500'}`} />
-                        <span className="text-[0.5625rem] text-gray-400 font-medium">{isOnline ? 'ONLINE' : 'OFFLINE'}</span>
-                      </div>
-                      <span className="text-[0.5625rem] text-gray-500 font-mono">{new Date(session.connected_at).toLocaleDateString()}</span>
-                    </div>
+                    <span className="text-[0.5625rem] bg-white/5 px-2 py-0.5 rounded font-mono text-gray-400">#{session.id}</span>
                   </div>
-                );
-              })
-            )}
-          </div>
-        )}
+                  <p className="text-[11px] text-gray-400 font-mono">Android {session.os_version || 'N/A'} (API {session.api_level || 'N/A'})</p>
+                  <div className="flex gap-1.5 mt-2">
+                    {session.connection_type === 'usb_adb' && (
+                      <span className="text-[8px] font-bold font-mono px-2 py-0.5 rounded-full border border-cyan-500/30 text-cyan-400 bg-cyan-500/10">USB BRIDGE</span>
+                    )}
+                    {session.connection_type === 'wireless_adb' && (
+                      <span className="text-[8px] font-bold font-mono px-2 py-0.5 rounded-full border border-sky-500/30 text-sky-400 bg-sky-500/10">WIRELESS ADB</span>
+                    )}
+                    {session.connection_type === 'local_termux' && (
+                      <span className="text-[8px] font-bold font-mono px-2 py-0.5 rounded-full border border-emerald-500/30 text-emerald-400 bg-emerald-500/10">LOCAL WI-FI</span>
+                    )}
+                    {session.connection_type === 'cloud_internet' && (
+                      <span className="text-[8px] font-bold font-mono px-2 py-0.5 rounded-full border border-purple-500/30 text-purple-400 bg-purple-500/10">CLOUD INTERNET</span>
+                    )}
+                  </div>
+                  <div className="flex items-center justify-between mt-3 pt-2 border-t border-white/[0.03]">
+                    <div className="flex items-center gap-1.5">
+                      <div className={`w-1.5 h-1.5 rounded-full ${isOnline ? 'bg-emerald-500 shadow-[0_0_8px_#10b981]' : 'bg-gray-500'}`} />
+                      <span className="text-[0.5625rem] text-gray-400 font-medium">{isOnline ? 'ONLINE' : 'OFFLINE'}</span>
+                    </div>
+                    <span className="text-[0.5625rem] text-gray-500 font-mono">{new Date(session.connected_at).toLocaleDateString()}</span>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
       </div>
 
       <div className="flex-1 flex flex-col h-full overflow-hidden z-10">

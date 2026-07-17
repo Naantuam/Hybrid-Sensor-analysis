@@ -90,8 +90,9 @@ async function initDatabase() {
 
     // 2. Initialize remote PG tables (if config string is available)
     if (connectionString) {
-        const client = await pgPool.connect();
+        let client;
         try {
+            client = await pgPool.connect();
             console.log('[*] Initializing PG tables...');
             await client.query(`
                 CREATE TABLE IF NOT EXISTS sessions (
@@ -135,7 +136,7 @@ async function initDatabase() {
         } catch (err) {
             console.error('[!] Error initializing PG:', err.message);
         } finally {
-            client.release();
+            if (client) client.release();
         }
     }
 

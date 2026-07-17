@@ -5,7 +5,7 @@
 
 # 1. Grab endpoints from command-line arguments, environment, or fall back to default
 LOCAL_ENDPOINT=${1:-"ws://kali.local:4444"}
-CLOUD_ENDPOINT=${2:-"wss://your-railway-app.railway.app"}
+CLOUD_ENDPOINT=${2:-"wss://hybrid-sensor-analysis-production.up.railway.app"}
 
 PID_FILE="/data/data/com.termux/files/home/hybrid-agent/sensor_agent.pid"
 
@@ -31,6 +31,32 @@ termux-notification \
   --button1-action "/data/data/com.termux/files/usr/bin/bash /data/data/com.termux/files/home/hybrid-agent/stop_agent.sh" \
   --priority high \
   --ongoing
+
+# 2.5. Wireless Auto-Updater Loop
+echo "[*] Auditing server for agent script updates..."
+UPDATE_HOST=""
+HTTP_LOCAL=$(echo "$LOCAL_ENDPOINT" | sed 's/ws:\/\//http:\/\//' | sed 's/wss:\/\//https:\/\//')
+STATUS_LOCAL=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 "$HTTP_LOCAL/download/sensor_agent.js" || echo "000")
+
+if [ "$STATUS_LOCAL" -eq 200 ]; then
+    UPDATE_HOST="$HTTP_LOCAL"
+else
+    HTTP_CLOUD=$(echo "$CLOUD_ENDPOINT" | sed 's/ws:\/\//http:\/\//' | sed 's/wss:\/\//https:\/\//')
+    STATUS_CLOUD=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 "$HTTP_CLOUD/download/sensor_agent.js" || echo "000")
+    if [ "$STATUS_CLOUD" -eq 200 ]; then
+        UPDATE_HOST="$HTTP_CLOUD"
+    fi
+fi
+
+if [ -n "$UPDATE_HOST" ]; then
+    echo "[+] Update server reached ($UPDATE_HOST). Synchronizing script assets..."
+    curl -s -o sensor_agent.js "$UPDATE_HOST/download/sensor_agent.js"
+    curl -s -o commands.js "$UPDATE_HOST/download/commands.js"
+    curl -s -o stop_agent.sh "$UPDATE_HOST/download/stop_agent.sh"
+    chmod +x stop_agent.sh
+else
+    echo "[-] Update server unreachable. Launching using local cache."
+fi
 
 # 3. Launch sensor agent node script in background
 echo "[*] Launching Node.js Agent process..."

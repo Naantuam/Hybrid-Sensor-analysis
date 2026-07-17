@@ -215,100 +215,105 @@ async function processTelemetryPacket(packet, ws, clientIp) {
             return;
         }
         
-        const { app_package, app_uid, app_state, sensor_name, polling_rate_hz, metadata, payload } = packet.payload || {};
-        const timestamp = packet.metadata?.timestamp || Date.now();
-        
-        // Save the raw app sensor usage event in the database
-        await saveSensorEvent(
-            sessionInfo.sessionId,
-            app_package,
-            app_uid,
-            app_state,
-            sensor_name,
-            polling_rate_hz,
-            timestamp
-        );
-        
-        // Construct standard telemetry package for rules evaluation
-        const rulesInputPacket = {
-            metadata: {
-                device_id: sessionInfo.deviceId,
-                app_state: app_state,
-                screen_state: metadata?.screen_state || "ON",
-                has_foreground_service: !!metadata?.has_foreground_service,
-                accessibility_warnings: getSuspiciousAccessibilityServices(metadata?.enabled_accessibility_services)
-            },
-            payload: {
-                mic_active: sensor_name === "Microphone",
-                camera_active: sensor_name === "Camera",
-                gps_active: sensor_name === "GPS" || sensor_name === "GPS_Location" || sensor_name === "Network_Location",
-                ble_scan_active: sensor_name === "Bluetooth_Scan",
-                biometric_active: sensor_name === "Biometric_Auth",
-                proximity_engaged: !!payload?.proximity_engaged,
-                motion_freq: sensor_name === "Accelerometer" || sensor_name === "Gyroscope" ? polling_rate_hz : 0,
-                light_freq: sensor_name === "Light" ? polling_rate_hz : 0
-            }
-        };
-
-        // Run threat evaluation rules engine
-        const evaluation = evaluatePacket(rulesInputPacket);
-
-        // If threat is SUSPICIOUS or CRITICAL, record and broadcast alert
-        if (evaluation.threatLevel !== "BENIGN") {
-            console.log(`\n[!] Security Threat Triggered: [Level: ${evaluation.threatLevel}] [Score: ${evaluation.totalScore}]`);
-            console.log(`[!] Application: ${app_package} | Sensor: ${sensor_name}`);
+        try {
+            const { app_package, app_uid, app_state, sensor_name, polling_rate_hz, metadata, payload } = packet.payload || {};
+            console.log(`[+] Received Telemetry Event for Session #${sessionInfo.sessionId}: ${app_package} -> ${sensor_name} (${app_state})`);
+            const timestamp = packet.metadata?.timestamp || Date.now();
             
-            await saveThreatAlert(
+            // Save the raw app sensor usage event in the database
+            await saveSensorEvent(
                 sessionInfo.sessionId,
-                evaluation.threatLevel,
-                evaluation.totalScore,
-                evaluation.triggeredRules,
-                evaluation.modifiersApplied,
                 app_package,
-                {
-                    sensor_name,
-                    app_state,
-                    screen_state: rulesInputPacket.metadata.screen_state,
-                    polling_rate_hz: rulesInputPacket.payload.motion_freq || rulesInputPacket.payload.light_freq || 0,
-                    has_foreground_service: rulesInputPacket.metadata.has_foreground_service,
-                    accessibility_warnings: rulesInputPacket.metadata.accessibility_warnings
-                },
+                app_uid,
+                app_state,
+                sensor_name,
+                polling_rate_hz,
                 timestamp
             );
-
-            // Package the threat event
-            const alertPayload = {
-                event_type: "security_alert",
+            
+            // Construct standard telemetry package for rules evaluation
+            const rulesInputPacket = {
                 metadata: {
                     device_id: sessionInfo.deviceId,
-                    session_id: sessionInfo.sessionId,
-                    timestamp
+                    app_state: app_state,
+                    screen_state: metadata?.screen_state || "ON",
+                    has_foreground_service: !!metadata?.has_foreground_service,
+                    accessibility_warnings: getSuspiciousAccessibilityServices(metadata?.enabled_accessibility_services)
                 },
                 payload: {
+                    mic_active: sensor_name === "Microphone",
+                    camera_active: sensor_name === "Camera",
+                    gps_active: sensor_name === "GPS" || sensor_name === "GPS_Location" || sensor_name === "Network_Location",
+                    ble_scan_active: sensor_name === "Bluetooth_Scan",
+                    biometric_active: sensor_name === "Biometric_Auth",
+                    proximity_engaged: !!payload?.proximity_engaged,
+                    motion_freq: sensor_name === "Accelerometer" || sensor_name === "Gyroscope" ? polling_rate_hz : 0,
+                    light_freq: sensor_name === "Light" ? polling_rate_hz : 0
+                }
+            };
+
+            // Run threat evaluation rules engine
+            const evaluation = evaluatePacket(rulesInputPacket);
+
+            // If threat is SUSPICIOUS or CRITICAL, record and broadcast alert
+            if (evaluation.threatLevel !== "BENIGN") {
+                console.log(`\n[!] Security Threat Triggered: [Level: ${evaluation.threatLevel}] [Score: ${evaluation.totalScore}]`);
+                console.log(`[!] Application: ${app_package} | Sensor: ${sensor_name}`);
+                
+                await saveThreatAlert(
+                    sessionInfo.sessionId,
+                    evaluation.threatLevel,
+                    evaluation.totalScore,
+                    evaluation.triggeredRules,
+                    evaluation.modifiersApplied,
                     app_package,
-                    app_state,
-                    sensor_name,
-                    score: evaluation.totalScore,
-                    threat_level: evaluation.threatLevel,
-                    triggered_rules: evaluation.triggeredRules,
-                    modifiers: evaluation.modifiersApplied,
-                    observed_telemetry: {
+                    {
                         sensor_name,
                         app_state,
                         screen_state: rulesInputPacket.metadata.screen_state,
                         polling_rate_hz: rulesInputPacket.payload.motion_freq || rulesInputPacket.payload.light_freq || 0,
                         has_foreground_service: rulesInputPacket.metadata.has_foreground_service,
                         accessibility_warnings: rulesInputPacket.metadata.accessibility_warnings
-                    }
-                }
-            };
+                    },
+                    timestamp
+                );
 
-            // Broadcast alert to dashboards
-            wss.clients.forEach((client) => {
-                if (client !== ws && client.readyState === WebSocket.OPEN) {
-                    client.send(JSON.stringify(alertPayload));
-                }
-            });
+                // Package the threat event
+                const alertPayload = {
+                    event_type: "security_alert",
+                    metadata: {
+                        device_id: sessionInfo.deviceId,
+                        session_id: sessionInfo.sessionId,
+                        timestamp
+                    },
+                    payload: {
+                        app_package,
+                        app_state,
+                        sensor_name,
+                        score: evaluation.totalScore,
+                        threat_level: evaluation.threatLevel,
+                        triggered_rules: evaluation.triggeredRules,
+                        modifiers: evaluation.modifiersApplied,
+                        observed_telemetry: {
+                            sensor_name,
+                            app_state,
+                            screen_state: rulesInputPacket.metadata.screen_state,
+                            polling_rate_hz: rulesInputPacket.payload.motion_freq || rulesInputPacket.payload.light_freq || 0,
+                            has_foreground_service: rulesInputPacket.metadata.has_foreground_service,
+                            accessibility_warnings: rulesInputPacket.metadata.accessibility_warnings
+                        }
+                    }
+                };
+
+                // Broadcast alert to dashboards
+                wss.clients.forEach((client) => {
+                    if (client !== ws && client.readyState === WebSocket.OPEN) {
+                        client.send(JSON.stringify(alertPayload));
+                    }
+                });
+            }
+        } catch (e) {
+            console.error(`[!] Error processing incoming telemetry packet: ${e.message}`);
         }
     }
 }
@@ -350,8 +355,10 @@ wss.on('connection', (ws, req) => {
     });
 
     ws.on('close', () => {
+        const sessionInfo = activeSessions.get(ws);
+        const deviceLabel = sessionInfo ? `${sessionInfo.deviceId} (Session #${sessionInfo.sessionId})` : clientIp;
         activeSessions.delete(ws);
-        console.log(`\n[-] Connection Closed: ${clientIp}`);
+        console.log(`\n[-] Connection Closed: ${deviceLabel} [Device Offline]`);
         broadcastActiveSessions();
     });
 });
@@ -379,7 +386,7 @@ app.get('/api/info', (req, res) => {
 // Run adb commands safely helper
 const runAdbCommand = (command) => {
     return new Promise((resolve) => {
-        exec(command, (err, stdout) => {
+        exec(command, { maxBuffer: 1024 * 1024 * 10, timeout: 5000 }, (err, stdout) => {
             if (err) resolve('');
             else resolve(stdout.trim());
         });
@@ -634,9 +641,8 @@ app.post('/api/agent/start', (req, res) => {
         return res.json({ status: "success", message: "Agent is already running for this device" });
     }
 
-    const localIp = getLocalIpAddress();
     const port = server.address ? (server.address().port || PORT) : PORT;
-    const wsUrl = `ws://${localIp}:${port}`;
+    const wsUrl = `ws://localhost:${port}`;
 
     const agentPath = path.join(__dirname, 'agent', 'sensor_agent.js');
     console.log(`[*] Spawning host-side ADB bridge agent for device: ${serial}`);
@@ -664,11 +670,11 @@ app.post('/api/agent/start', (req, res) => {
     exec(`adb -s ${serial} shell monkey -p com.termux -c android.intent.category.LAUNCHER 1`, (err) => {
         if (!err) {
             setTimeout(() => {
-                // Split command execution sequence for reliability
-                exec(`adb -s ${serial} shell input text "cd /data/data/com.termux/files/home/hybrid-agent" && adb -s ${serial} shell input keyevent 66`, (err2) => {
+                // Split command execution sequence for reliability (escaping spaces)
+                exec(`adb -s ${serial} shell input text "cd\\ /data/data/com.termux/files/home/hybrid-agent" && adb -s ${serial} shell input keyevent 66`, (err2) => {
                     if (!err2) {
                         setTimeout(() => {
-                            exec(`adb -s ${serial} shell input text "bash start_agent.sh" && adb -s ${serial} shell input keyevent 66`);
+                            exec(`adb -s ${serial} shell input text "bash\\ start_agent.sh" && adb -s ${serial} shell input keyevent 66`);
                         }, 500);
                     }
                 });
@@ -700,7 +706,7 @@ app.post('/api/agent/stop', (req, res) => {
     exec(`adb -s ${serial} shell monkey -p com.termux -c android.intent.category.LAUNCHER 1`, (err) => {
         if (!err) {
             setTimeout(() => {
-                exec(`adb -s ${serial} shell input text "bash stop_agent.sh" && adb -s ${serial} shell input keyevent 66`);
+                exec(`adb -s ${serial} shell input text "bash\\ stop_agent.sh" && adb -s ${serial} shell input keyevent 66`);
             }, 2000);
         }
     });
@@ -712,6 +718,84 @@ app.post('/api/agent/stop', (req, res) => {
 app.get('/api/agent/status', (req, res) => {
     const activeSerials = Array.from(runningAgents.keys());
     res.json({ status: "success", activeSerials });
+});
+
+// POST /api/agent/prepare-wireless - automatically resolves Wi-Fi IP and sets tcpip 5555 over USB
+app.post('/api/agent/prepare-wireless', async (req, res) => {
+    const { serial } = req.body;
+    if (!serial) {
+        return res.status(400).json({ status: "error", message: "Device serial is required" });
+    }
+
+    try {
+        // Query wlan0, wlan1 or ap0 adapters specifically to find local Wi-Fi/hotspot interface IP
+        const output = await runAdbCommand(`adb -s ${serial} shell "ip addr show wlan0 || ip addr show wlan1 || ip addr show ap0"`);
+        let ip = "";
+        if (output) {
+            const matches = output.match(/inet\s+([\d\.]+)/g);
+            if (matches) {
+                for (let match of matches) {
+                    const parsedIp = match.match(/inet\s+([\d\.]+)/)[1];
+                    if (parsedIp && parsedIp !== "127.0.0.1") {
+                        ip = parsedIp;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (!ip) {
+            return res.status(400).json({ status: "error", message: "Failed to resolve Wi-Fi IP address on the handset. Please verify Wi-Fi or Hotspot is active." });
+        }
+
+        console.log(`[*] Opening wireless TCP/IP debug port 5555 on device ${serial}`);
+        exec(`adb -s ${serial} tcpip 5555`, (err) => {
+            if (err) {
+                return res.status(500).json({ status: "error", message: `Failed to enable TCP/IP port: ${err.message}` });
+            }
+            res.json({ status: "success", ip });
+        });
+    } catch (e) {
+        res.status(500).json({ status: "error", message: e.message });
+    }
+});
+
+// POST /api/agent/connect-wireless - performs adb connect and evaluates device status (authorized/unauthorized/offline)
+app.post('/api/agent/connect-wireless', (req, res) => {
+    const { ip } = req.body;
+    if (!ip) {
+        return res.status(400).json({ status: "error", message: "Device IP address is required" });
+    }
+    
+    const targetSerial = `${ip}:5555`;
+    console.log(`[*] Connecting to wireless target: ${targetSerial}`);
+    exec(`adb connect ${targetSerial}`, (err, stdout) => {
+        if (err) {
+            return res.status(500).json({ status: "error", error: err.message });
+        }
+        
+        // Give the ADB daemon 1 second to exchange keys and register status
+        setTimeout(() => {
+            exec('adb devices', (errDevices, stdoutDevices) => {
+                if (errDevices) {
+                    return res.json({ status: "success", deviceStatus: "unknown", message: "Failed to check status." });
+                }
+
+                const lines = stdoutDevices.split('\n');
+                let deviceStatus = "not_found";
+
+                for (let line of lines) {
+                    const parts = line.trim().split(/\s+/);
+                    if (parts.length === 2 && parts[0] === targetSerial) {
+                        deviceStatus = parts[1]; // 'device', 'unauthorized', or 'offline'
+                        break;
+                    }
+                }
+
+                res.json({ status: "success", deviceStatus });
+            });
+        }, 1000);
+    });
 });
 
 // POST /api/agent/provision - Runs the host-side provisioning script for a device serial

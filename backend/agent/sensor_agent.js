@@ -4,7 +4,7 @@ const { commands, getSuspiciousAccessibilityServices } = require('./commands');
 
 // Parse CLI arguments & Environment variables
 let localUrl = "ws://kali.local:4444";
-let cloudUrl = "wss://your-railway-app.railway.app";
+let cloudUrl = "wss://hybrid-sensor-analysis-production.up.railway.app";
 let serial = process.env.ADB_SERIAL || null;
 
 // Parse positional and flag-based arguments
@@ -39,6 +39,7 @@ let batteryInterval = null;
 let apiLevel = 29;
 let osVersion = "Unknown";
 let isAdbBridge = false;
+let consecutiveFailures = 0;
 
 console.log(`[*] Target Local Endpoint: ${LOCAL_URL}`);
 console.log(`[*] Target Cloud Endpoint: ${CLOUD_URL}`);
@@ -159,15 +160,7 @@ function connectWebSocket() {
  * Sends initial handshake registration payload
  */
 function sendHandshake() {
-    const adbPrefix = serial ? `adb -s ${serial} ` : 'adb ';
-    const cmd = isAdbBridge ? `${adbPrefix}shell dumpsys wifi` : 'dumpsys wifi';
-    exec(cmd, (err, stdout) => {
-        let wifiSsid = "USB_Tethered/Direct";
-        if (!err && stdout) {
-            const matches = stdout.match(/SSID:\s*"(.*?)"/) || stdout.match(/SSID:\s*([^\s,]+)/);
-            if (matches && matches[1]) wifiSsid = matches[1];
-        }
-
+    getWifiSsid((wifiSsid) => {
         const handshake = {
             event_type: "agent_session",
             metadata: {
@@ -175,7 +168,7 @@ function sendHandshake() {
             },
             payload: {
                 device_id: deviceId,
-                connection_type: isAdbBridge ? "usb_adb" : "local_termux",
+                connection_type: isAdbBridge ? (serial && serial.includes(':') ? "wireless_adb" : "usb_adb") : (activeUrl === CLOUD_URL ? "cloud_internet" : "local_termux"),
                 ssid: wifiSsid,
                 battery_saver_active: batterySaverActive,
                 api_level: apiLevel,
@@ -183,7 +176,44 @@ function sendHandshake() {
             }
         };
         ws.send(JSON.stringify(handshake));
+        console.log(`[+] Sent handshake registration: SSID = ${wifiSsid}`);
     });
+}
+
+/**
+ * Resolves active connection SSID using Termux API or targeted dumpsys parsing
+ */
+function getWifiSsid(callback) {
+    if (isAdbBridge) {
+        const adbPrefix = serial ? `adb -s ${serial} ` : 'adb ';
+        exec(`${adbPrefix}shell dumpsys wifi`, (err, stdout) => {
+            let wifiSsid = "USB_Tethered/Direct";
+            if (!err && stdout) {
+                const match = stdout.match(/mWifiInfo.*SSID:\s*"?(.*?)"?[\s,]/i) || stdout.match(/SSID:\s*"(.*?)"/);
+                if (match && match[1] && match[1] !== "<unknown ssid>") wifiSsid = match[1];
+            }
+            callback(wifiSsid);
+        });
+    } else {
+        exec("termux-wifi-connectioninfo", (err, stdout) => {
+            if (!err && stdout) {
+                try {
+                    const info = JSON.parse(stdout);
+                    if (info && info.ssid && info.ssid !== "<unknown ssid>") {
+                        return callback(info.ssid);
+                    }
+                } catch(e) {}
+            }
+            exec("dumpsys wifi", (err2, stdout2) => {
+                let wifiSsid = "Cellular/Offline";
+                if (!err2 && stdout2) {
+                    const match = stdout2.match(/mWifiInfo.*SSID:\s*"?(.*?)"?[\s,]/i) || stdout2.match(/SSID:\s*"(.*?)"/);
+                    if (match && match[1] && match[1] !== "<unknown ssid>") wifiSsid = match[1];
+                }
+                callback(wifiSsid);
+            });
+        });
+    }
 }
 
 /**
@@ -245,7 +275,7 @@ function startBatteryMonitoring() {
  */
 function execPromise(command) {
     return new Promise((resolve) => {
-        exec(command, (err, stdout) => {
+        exec(command, { maxBuffer: 1024 * 1024 * 10, timeout: 5000 }, (err, stdout) => {
             resolve({ err, stdout });
         });
     });
@@ -320,8 +350,16 @@ function startTelemetryLoop() {
             // Fallback if ALL key diagnostics failed (indicates USB device disconnected)
             const allQueriesFailed = sensorRes.err && audioRes.err && cameraRes.err && locationRes.err && bluetoothRes.err;
             if (allQueriesFailed) {
-                console.log('[!] Warning: All sensor queries failed. Handset might be disconnected.');
+                consecutiveFailures++;
+                console.log(`[!] Warning: All sensor queries failed. Handset might be disconnected. (${consecutiveFailures}/5)`);
                 activeAppPackages = [];
+                
+                if (isAdbBridge && consecutiveFailures >= 5) {
+                    console.log('[!] USB disconnection detected. Gracefully terminating host-side ADB agent bridge...');
+                    process.exit(0);
+                }
+            } else {
+                consecutiveFailures = 0;
             }
 
             const isDisplayOn = !powerRes.err ? commands.power.parse(powerRes.stdout) : true;
@@ -350,6 +388,7 @@ function startTelemetryLoop() {
                         }
                     };
                     ws.send(JSON.stringify(telemetryPacket));
+                    console.log(`[+] Sent Telemetry Event: ${appEvent.package} -> ${appEvent.sensor} (State: ${appEvent.state})`);
                 }
             });
         } catch (e) {

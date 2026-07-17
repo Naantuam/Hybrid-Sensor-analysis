@@ -193,7 +193,7 @@ export default function ThreatDrawer({ drawerOpen, setDrawerOpen, selectedThreat
 
                       <span className="text-gray-500 block self-start">ACCESSIBILITY THREATS:</span>
                       <span className="text-gray-400 font-sans block self-start">
-                        {telemetry.enabled_accessibility_services && telemetry.enabled_accessibility_services.length > 0 ? (
+                        {Array.isArray(telemetry.enabled_accessibility_services) && telemetry.enabled_accessibility_services.length > 0 ? (
                           <ul className="list-disc list-inside text-red-400 text-[0.625rem] space-y-1 leading-normal">
                             {telemetry.enabled_accessibility_services.map((srv, idx) => (
                               <li key={idx} className="truncate max-w-48">{srv.split('/').pop()}</li>

@@ -100,57 +100,51 @@ const commands = {
         }
     },
     audio: {
-        shellCommand: "dumpsys audio",
+        shellCommand: "dumpsys audio && dumpsys media.audio_policy",
         description: "Audits active microphone recording configurations to detect microphone usage",
         parse: (stdout) => {
             const list = [];
             const lines = stdout.split('\n');
-            const activeRecords = new Map();
-            let inRecordMonitorSection = false;
+            const activeRecords = new Set();
 
             lines.forEach(line => {
-                const trimmed = line.trim();
-                
-                // Track if we are inside RecordActivityMonitor dump section to parse current configurations
-                if (trimmed.includes('RecordActivityMonitor dump') || trimmed.includes('Recording activity clients:')) {
-                    inRecordMonitorSection = true;
-                }
-                if (inRecordMonitorSection && (trimmed.startsWith('AudioEventLogger') || trimmed.startsWith('PlaybackActivityMonitor') || trimmed.startsWith('RoutingService'))) {
-                    inRecordMonitorSection = false;
-                }
+                const trimmed = line.trim().toLowerCase();
 
-                if (line.includes('rec start')) {
-                    const riidMatch = line.match(/riid:(\d+)/);
-                    const pkgMatch = line.match(/pack:([\w\.]+)/);
-                    const uidMatch = line.match(/uid:(\d+)/);
-                    if (riidMatch && pkgMatch) {
-                        activeRecords.set(riidMatch[1], {
-                            package: pkgMatch[1],
-                            uid: uidMatch ? uidMatch[1] : "unknown"
-                        });
-                    }
-                } else if (line.includes('rec stop')) {
-                    const riidMatch = line.match(/riid:(\d+)/);
-                    if (riidMatch) {
-                        activeRecords.delete(riidMatch[1]);
-                    }
-                } else if (inRecordMonitorSection) {
-                    // Match current active config dump lines (e.g. session:123 -- client:com.whatsapp -- uid:10123)
-                    const configMatch = line.match(/client:([\w\.]+)\s+--\s+uid:(\d+)/) || 
-                                         line.match(/pack:([\w\.]+)\s+--\s+uid:(\d+)/) ||
-                                         line.match(/pack:([\w\.]+).*?uid:(\d+)/);
-                    if (configMatch) {
-                        const pkgName = configMatch[1];
-                        const uid = configMatch[2];
-                        activeRecords.set("direct_" + pkgName + "_" + uid, {
-                            package: pkgName,
-                            uid: uid
-                        });
+                // Look for active recording client contexts
+                const isRecordLine = trimmed.includes('client:') || 
+                                     trimmed.includes('package') || 
+                                     trimmed.includes('pack:') || 
+                                     trimmed.includes('rec start');
+
+                if (isRecordLine) {
+                    // Check if this line is in record / capture / recording scope
+                    const isRecording = trimmed.includes('record') || 
+                                        trimmed.includes('recording') || 
+                                        trimmed.includes('capture') || 
+                                        trimmed.includes('rec');
+
+                    if (isRecording) {
+                        const pkgMatch = line.match(/(?:Client|client|package|pack|package=):\s*"?([\w\.]+)"?/i) ||
+                                         line.match(/(?:client|pack):\s*([\w\.]+)/i) ||
+                                         line.match(/package\s+([\w\.]+)/i);
+
+                        const uidMatch = line.match(/uid:?(\d+)/i) || line.match(/uid\s+(\d+)/i);
+
+                        if (pkgMatch && pkgMatch[1]) {
+                            const pkgName = pkgMatch[1];
+                            if (pkgName !== "android" && pkgName !== "system") {
+                                activeRecords.add(JSON.stringify({
+                                    package: pkgName,
+                                    uid: uidMatch ? uidMatch[1] : "1000"
+                                }));
+                            }
+                        }
                     }
                 }
             });
 
-            activeRecords.forEach((record) => {
+            activeRecords.forEach((recordStr) => {
+                const record = JSON.parse(recordStr);
                 list.push({
                     package: record.package,
                     uid: record.uid,
@@ -170,29 +164,43 @@ const commands = {
         description: "Checks active clients connected to the camera hardware service",
         parse: (stdout) => {
             const list = [];
-            const clientSection = stdout.match(/Active Camera Clients:\s*\n?([^]*?)(?=\n\n|\nAllowed user IDs:|\n==)/i);
+            if (!stdout) return list;
+            const lines = stdout.split('\n');
+            let isClientSection = false;
 
-            if (clientSection && clientSection[1]) {
-                const lines = clientSection[1].split('\n');
-                lines.forEach(line => {
-                    const trimmed = line.trim();
-                    if (trimmed !== '[]' && trimmed !== '') {
-                        const match = trimmed.match(/Client:\s+([\w\.]+)/) || trimmed.match(/([\w\.]+)/);
-                        if (match && match[1] !== 'Client' && match[1] !== 'PID') {
-                            list.push({
-                                package: match[1],
-                                uid: "unknown",
-                                state: "FOREGROUND",
-                                sensor: "Camera",
-                                rate: 1,
-                                screenOff: false,
-                                foregroundService: true,
-                                proximityEngaged: false
-                            });
-                        }
+            lines.forEach(line => {
+                const trimmed = line.trim();
+                
+                // Track start of clients section (Android 10+)
+                if (trimmed.includes("Camera module authority clients:") || trimmed.includes("Active Camera Clients:")) {
+                    isClientSection = true;
+                    return;
+                }
+                // Stop scanning at section boundaries
+                if (isClientSection && (trimmed.startsWith("Allowed user IDs:") || trimmed.startsWith("Device type:"))) {
+                    isClientSection = false;
+                }
+
+                if (isClientSection) {
+                    // Match pattern: Client "com.whatsapp" (API 29-35 formats)
+                    const pkgMatch = trimmed.match(/Client\s+["']?([\w\.]+)["']?/i) ||
+                                     trimmed.match(/client:\s*([\w\.]+)/i) ||
+                                     trimmed.match(/Package\s+([\w\.]+)/i);
+                                     
+                    if (pkgMatch && pkgMatch[1] && pkgMatch[1] !== "android") {
+                        list.push({
+                            package: pkgMatch[1],
+                            uid: "1000",
+                            state: "FOREGROUND",
+                            sensor: "Camera",
+                            rate: 1,
+                            screenOff: false,
+                            foregroundService: true,
+                            proximityEngaged: false
+                        });
                     }
-                });
-            }
+                }
+            });
             return list;
         }
     },
@@ -201,46 +209,37 @@ const commands = {
         description: "Checks GPS and location provider active request records",
         parse: (stdout) => {
             const list = [];
+            if (!stdout) return list;
             const lines = stdout.split('\n');
-            let inActiveRecords = false;
-            let currentProvider = "Location";
-
-            for (let line of lines) {
-                if (line.includes('Active Records by Provider:')) {
-                    inActiveRecords = true;
-                    continue;
-                }
-                if (inActiveRecords && (line.includes('Historical Records by Provider:') || line.includes('Last Known Locations:'))) {
-                    inActiveRecords = false;
-                }
-
-                if (inActiveRecords) {
-                    const providerMatch = line.match(/^(\w+):/);
-                    if (providerMatch) {
-                        currentProvider = providerMatch[1];
-                    }
-
-                    const recordMatch = line.match(/UpdateRecord\[\w+\s+([\w\.]+)\((\d+)(?:\s+(\w+))?\)/);
-                    if (recordMatch) {
-                        const pkgName = recordMatch[1];
-                        const uid = recordMatch[2];
-                        const appState = recordMatch[3] ? recordMatch[3].toUpperCase() : 'FOREGROUND';
-
-                        if (pkgName !== 'android' && pkgName !== 'system') {
-                            list.push({
-                                package: pkgName,
-                                uid: uid,
-                                state: appState === 'FOREGROUND' ? 'FOREGROUND' : 'BACKGROUND',
-                                sensor: currentProvider === 'gps' ? 'GPS_Location' : 'Network_Location',
-                                rate: 1,
-                                screenOff: appState === 'BACKGROUND',
-                                foregroundService: true,
-                                proximityEngaged: false
-                            });
-                        }
+            
+            // Standard Android 10-15 Location Manager Provider line patterns
+            lines.forEach(line => {
+                const trimmed = line.trim();
+                
+                // Matches active location requests in dumpsys (Android 10-15: "request: WorkSource{10123 com.google.android.apps.maps}")
+                // Matches legacy Android 10 layout: "UpdateRecord[gps com.whatsapp(10123)]"
+                const requestMatch = trimmed.match(/WorkSource\{\s*(\d+)\s+([\w\.]+)\s*\}/) ||
+                                     trimmed.match(/UpdateRecord\[\w+\s+([\w\.]+)\((\d+)\)/) ||
+                                     trimmed.match(/receiver:\s*([\w\.]+)\s*\(uid\s+(\d+)\)/);
+                                     
+                if (requestMatch) {
+                    const pkgName = requestMatch[2] || requestMatch[1];
+                    const uid = requestMatch[1] || requestMatch[2];
+                    
+                    if (pkgName && pkgName !== 'android' && pkgName !== 'system') {
+                        list.push({
+                            package: pkgName,
+                            uid: uid,
+                            state: "FOREGROUND",
+                            sensor: trimmed.toLowerCase().includes('gps') ? 'GPS_Location' : 'Network_Location',
+                            rate: 1,
+                            screenOff: false,
+                            foregroundService: true,
+                            proximityEngaged: false
+                        });
                     }
                 }
-            }
+            });
             return list;
         }
     },
