@@ -112,8 +112,9 @@ function connectWebSocket() {
     console.log(`[*] Connecting to server at ${activeUrl}...`);
     ws = new WebSocket(activeUrl);
 
-    ws.on('open', () => {
+    ws.on('open', async () => {
         console.log(`[+] Connected to broker at ${activeUrl}`);
+        await updateUidMap();
         sendHandshake();
         startTelemetryLoop();
         startBatteryMonitoring();
@@ -290,6 +291,28 @@ function runDeviceCmd(command) {
     return execPromise(prefix + command);
 }
 
+const uidToPackageMap = new Map();
+
+async function updateUidMap() {
+    try {
+        const res = await runDeviceCmd("pm list packages -U");
+        if (!res.err && res.stdout) {
+            const lines = res.stdout.split('\n');
+            lines.forEach(line => {
+                const trimmed = line.trim();
+                const match = trimmed.match(/^package:([\w\.]+)\s+uid:(\d+)/i) ||
+                              trimmed.match(/^package:([\w\.]+)\s+uid=(\d+)/i);
+                if (match) {
+                    uidToPackageMap.set(match[2], match[1]);
+                }
+            });
+            console.log(`[+] Package UID Map updated: cached ${uidToPackageMap.size} packages.`);
+        }
+    } catch (e) {
+        console.error('[!] Error updating UID map:', e);
+    }
+}
+
 /**
  * Periodically audits active sensor-using applications (SensorManager, Camera, Audio, Location, Bluetooth)
  */
@@ -297,6 +320,9 @@ function startTelemetryLoop() {
     if (batterySaverActive) return;
 
     clearInterval(telemetryInterval);
+    // Periodically refresh the UID package cache every 3 minutes
+    const uidInterval = setInterval(updateUidMap, 180000);
+
     const runIteration = async () => {
         try {
             // Run system dumpsys diagnostics concurrently using definitions in commands.js
@@ -321,9 +347,9 @@ function startTelemetryLoop() {
                 activeAppPackages = activeAppPackages.concat(commands.sensorservice.parse(sensorRes.stdout));
             }
 
-            // 2. Parse Microphone recording status
+            // 2. Parse Microphone recording status (pass the cached UID map)
             if (!audioRes.err && audioRes.stdout) {
-                activeAppPackages = activeAppPackages.concat(commands.audio.parse(audioRes.stdout));
+                activeAppPackages = activeAppPackages.concat(commands.audio.parse(audioRes.stdout, uidToPackageMap));
             }
 
             // 3. Parse Camera status

@@ -203,7 +203,6 @@ export default function DeviceRegister({ toggleSidebar }) {
 
   const getProfileLabel = (prof) => {
     switch (prof) {
-      case 'legacy': return 'Legacy (Android 7 - 9)';
       case 'x86_64': return 'AVD Emulator (x86_64)';
       default: return 'Modern (Android 10 - 14+)';
     }
@@ -481,7 +480,7 @@ export default function DeviceRegister({ toggleSidebar }) {
             </h3>
             
             <div className="space-y-2">
-              {['modern', 'legacy', 'x86_64'].map(prof => (
+              {['modern', 'x86_64'].map(prof => (
                 <div 
                   key={prof}
                   onClick={() => setSelectedProfile(prof)}
@@ -494,7 +493,6 @@ export default function DeviceRegister({ toggleSidebar }) {
                   <div className="font-semibold text-xs">{getProfileLabel(prof)}</div>
                   <div className="text-[0.5625rem] text-gray-500 mt-1">
                     {prof === 'modern' && 'Targeting Android 10, 11, 12, 13, and 14+.'}
-                    {prof === 'legacy' && 'Targeting Android 7, 8, and 9.'}
                     {prof === 'x86_64' && 'Targeting x86/x86_64 virtual emulator images.'}
                   </div>
                 </div>

@@ -498,6 +498,107 @@ async function getSensorEvents(sessionId) {
     }
 }
 
+/**
+ * Retrieves stats across all sessions (entire system)
+ */
+async function getSystemStats() {
+    if (connectionString && isCloud) {
+        const statsQuery = `
+            SELECT 
+                (SELECT COALESCE(MAX(score), 0) FROM threat_alerts) as max_score,
+                (SELECT COUNT(*) FROM threat_alerts) as total_threats,
+                (SELECT COUNT(*) FROM sensor_events) as total_events,
+                (SELECT COUNT(*) FROM sessions) as total_devices;
+        `;
+        const statsRes = await pgPool.query(statsQuery);
+        return {
+            max_score: parseInt(statsRes.rows[0].max_score),
+            total_threats: parseInt(statsRes.rows[0].total_threats),
+            total_events: parseInt(statsRes.rows[0].total_events),
+            total_devices: parseInt(statsRes.rows[0].total_devices)
+        };
+    } else {
+        const maxScoreObj = localDb.prepare("SELECT COALESCE(MAX(score), 0) as max_score FROM threat_alerts").get();
+        const totalThreatsObj = localDb.prepare("SELECT COUNT(*) as total_threats FROM threat_alerts").get();
+        const totalEventsObj = localDb.prepare("SELECT COUNT(*) as total_events FROM sensor_events").get();
+        const totalDevicesObj = localDb.prepare("SELECT COUNT(*) as total_devices FROM sessions").get();
+        
+        return {
+            max_score: maxScoreObj ? maxScoreObj.max_score : 0,
+            total_threats: totalThreatsObj ? totalThreatsObj.total_threats : 0,
+            total_events: totalEventsObj ? totalEventsObj.total_events : 0,
+            total_devices: totalDevicesObj ? totalDevicesObj.total_devices : 0
+        };
+    }
+}
+
+/**
+ * Retrieves all threat alerts across the system, joined with device info
+ */
+async function getAllThreatAlerts() {
+    if (connectionString && isCloud) {
+        const query = `
+            SELECT t.*, s.device_id, s.os_version, s.api_level, s.connection_type
+            FROM threat_alerts t
+            JOIN sessions s ON t.session_id = s.id
+            ORDER BY t.timestamp DESC
+            LIMIT 500
+        `;
+        const res = await pgPool.query(query);
+        return res.rows;
+    } else {
+        const query = `
+            SELECT t.*, s.device_id, s.os_version, s.api_level, s.connection_type
+            FROM threat_alerts t
+            JOIN sessions s ON t.session_id = s.id
+            ORDER BY t.timestamp DESC
+            LIMIT 500
+        `;
+        const rows = localDb.prepare(query).all();
+        return rows.map(r => ({
+            id: r.id,
+            session_id: r.session_id,
+            device_id: r.device_id,
+            os_version: r.os_version,
+            api_level: r.api_level,
+            connection_type: r.connection_type,
+            threat_level: r.threat_level,
+            score: r.score,
+            triggered_rules: JSON.parse(r.triggered_rules),
+            modifiers: JSON.parse(r.modifiers),
+            app_package: r.app_package,
+            observed_telemetry: JSON.parse(r.observed_telemetry),
+            timestamp: r.timestamp
+        }));
+    }
+}
+
+/**
+ * Retrieves all sensor events across the system, joined with device info
+ */
+async function getAllSensorEvents() {
+    if (connectionString && isCloud) {
+        const query = `
+            SELECT se.*, s.device_id
+            FROM sensor_events se
+            JOIN sessions s ON se.session_id = s.id
+            ORDER BY se.timestamp DESC
+            LIMIT 500
+        `;
+        const res = await pgPool.query(query);
+        return res.rows;
+    } else {
+        const query = `
+            SELECT se.*, s.device_id
+            FROM sensor_events se
+            JOIN sessions s ON se.session_id = s.id
+            ORDER BY se.timestamp DESC
+            LIMIT 500
+        `;
+        return localDb.prepare(query).all();
+    }
+}
+
 module.exports = {
     initDatabase,
     saveSession,
@@ -508,5 +609,8 @@ module.exports = {
     getSessionStats,
     getThreatAlerts,
     getSensorEvents,
+    getSystemStats,
+    getAllThreatAlerts,
+    getAllSensorEvents,
     pool: pgPool
 };

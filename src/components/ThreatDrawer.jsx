@@ -58,7 +58,7 @@ const ACADEMIC_DESCRIPTIONS = {
   }
 };
 
-export default function ThreatDrawer({ drawerOpen, setDrawerOpen, selectedThreat, getThreatColorClass }) {
+export default function ThreatDrawer({ drawerOpen, setDrawerOpen, selectedThreat, getThreatColorClass, selectedSession }) {
   return (
     <>
       {/* SLIDE-OVER FORENSIC Incident Drawer (SPACIOUS DRAWER) */}
@@ -86,6 +86,33 @@ export default function ThreatDrawer({ drawerOpen, setDrawerOpen, selectedThreat
         {selectedThreat ? (
           <div className="flex-1 overflow-y-auto p-6 space-y-8 text-[#f3f4f6]">
             
+            {/* HEADING 0: TARGET DEVICE DETAILS */}
+            <div className="space-y-4">
+              <h4 className="text-xs font-bold text-gray-300 uppercase tracking-widest border-l-2 border-cyan-400 pl-2">
+                0. Device Identification
+              </h4>
+              <div className="bg-[#11121d] border border-white/5 rounded-2xl p-5 space-y-3.5 text-xs">
+                <div className="flex justify-between items-center py-1">
+                  <span className="text-gray-400">Device model:</span>
+                  <span className="font-semibold text-white">
+                    {selectedThreat.device_id?.replace(/_/g, ' ') || selectedSession?.device_id?.replace(/_/g, ' ') || 'Unknown Device'}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center py-1 border-t border-white/[0.03]">
+                  <span className="text-gray-400">Android / API version:</span>
+                  <span className="font-semibold text-white font-mono">
+                    Android {selectedThreat.os_version || selectedSession?.os_version || 'N/A'} (API {selectedThreat.api_level || selectedSession?.api_level || 'N/A'})
+                  </span>
+                </div>
+                <div className="flex justify-between items-center py-1 border-t border-white/[0.03]">
+                  <span className="text-gray-400">Connection Mode:</span>
+                  <span className="font-semibold text-white uppercase text-[10px] font-mono">
+                    {selectedThreat.connection_type || selectedSession?.connection_type || 'N/A'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
             {/* HEADING 1: METRIC COMPONENT */}
             <div className="space-y-4">
               <h4 className="text-xs font-bold text-gray-300 uppercase tracking-widest border-l-2 border-cyan-400 pl-2">

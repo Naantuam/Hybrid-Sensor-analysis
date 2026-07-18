@@ -31,7 +31,10 @@ const {
     getSessions,
     getSessionStats,
     getThreatAlerts,
-    getSensorEvents
+    getSensorEvents,
+    getSystemStats,
+    getAllThreatAlerts,
+    getAllSensorEvents
 } = require('./db');
 const { evaluatePacket } = require('./rules');
 
@@ -230,6 +233,29 @@ async function processTelemetryPacket(packet, ws, clientIp) {
                 polling_rate_hz,
                 timestamp
             );
+
+            // Broadcast telemetry event in real-time to dashboard clients
+            const telemetryPayload = {
+                event_type: "app_sensor_telemetry",
+                metadata: {
+                    device_id: sessionInfo.deviceId,
+                    session_id: sessionInfo.sessionId,
+                    timestamp
+                },
+                payload: {
+                    app_package,
+                    app_uid,
+                    app_state,
+                    sensor_name,
+                    polling_rate_hz
+                }
+            };
+            
+            wss.clients.forEach((client) => {
+                if (client.readyState === WebSocket.OPEN) {
+                    client.send(JSON.stringify(telemetryPayload));
+                }
+            });
             
             // Construct standard telemetry package for rules evaluation
             const rulesInputPacket = {
@@ -416,11 +442,14 @@ app.get('/api/usb-detect', async (req, res) => {
                         runAdbCommand(`adb -s ${serial} shell getprop ro.product.cpu.abi`)
                     ]);
                     
+                    if (version && parseInt(version) < 10) {
+                        console.log(`[!] Skipping unsupported device ${model || serial} (Android ${version} is below Android 10)`);
+                        continue;
+                    }
+
                     let profile = "modern";
                     if (abi && abi.includes("x86")) {
                         profile = "x86_64";
-                    } else if (version && parseInt(version) < 10) {
-                        profile = "legacy";
                     }
                     
                     devices.push({
@@ -475,6 +504,36 @@ app.get('/api/sessions/:id/threats', async (req, res) => {
 app.get('/api/sessions/:id/events', async (req, res) => {
     try {
         const events = await getSensorEvents(parseInt(req.params.id));
+        res.json(events);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Get system-wide stats
+app.get('/api/stats', async (req, res) => {
+    try {
+        const stats = await getSystemStats();
+        res.json(stats);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Get all threat alerts (joined with session details)
+app.get('/api/threats', async (req, res) => {
+    try {
+        const threats = await getAllThreatAlerts();
+        res.json(threats);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Get all sensor events
+app.get('/api/events', async (req, res) => {
+    try {
+        const events = await getAllSensorEvents();
         res.json(events);
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -632,11 +691,36 @@ const runningAgents = new Map();
 
 // POST /api/agent/start - starts agent for a device serial
 app.post('/api/agent/start', (req, res) => {
-    const { serial } = req.body;
+    const { serial, connectionType } = req.body;
     if (!serial) {
         return res.status(400).json({ status: "error", message: "Device serial is required" });
     }
 
+    // Determine connection mode based on explicit connectionType or serial format fallback
+    const mode = connectionType || (serial.includes(':') ? 'wireless_adb' : 'usb_adb');
+
+    if (mode === 'local_termux' || mode === 'cloud_internet') {
+        // Native Mode: Trigger Termux app launch and script execution on the mobile device over USB/ADB
+        console.log(`[*] Remotely booting Termux native agent on handset over ADB: ${serial}`);
+        exec(`adb -s ${serial} shell monkey -p com.termux -c android.intent.category.LAUNCHER 1`, (err) => {
+            if (err) {
+                console.error(`[!] Failed to launch Termux via monkey: ${err.message}`);
+                return res.status(500).json({ status: "error", error: "Could not launch Termux app on the device" });
+            }
+            setTimeout(() => {
+                exec(`adb -s ${serial} shell input text "cd\\ /data/data/com.termux/files/home/hybrid-agent" && adb -s ${serial} shell input keyevent 66`, (err2) => {
+                    if (!err2) {
+                        setTimeout(() => {
+                            exec(`adb -s ${serial} shell input text "bash\\ start_agent.sh" && adb -s ${serial} shell input keyevent 66`);
+                        }, 500);
+                    }
+                });
+            }, 2000);
+        });
+        return res.json({ status: "success", message: `Native Termux agent boot command sent to device ${serial}` });
+    }
+
+    // ADB Bridge Mode: Spawn host-side ADB agent process on Kali
     if (runningAgents.has(serial)) {
         return res.json({ status: "success", message: "Agent is already running for this device" });
     }
@@ -645,9 +729,8 @@ app.post('/api/agent/start', (req, res) => {
     const wsUrl = `ws://localhost:${port}`;
 
     const agentPath = path.join(__dirname, 'agent', 'sensor_agent.js');
-    console.log(`[*] Spawning host-side ADB bridge agent for device: ${serial}`);
+    console.log(`[*] Spawning host-side ADB bridge agent for device: ${serial} (Mode: ${mode})`);
     
-    // Spawn agent process: node sensor_agent.js <ws_url> -s <serial>
     const agentProcess = spawn('node', [agentPath, wsUrl, '-s', serial]);
 
     agentProcess.stdout.on('data', (data) => {
@@ -665,24 +748,7 @@ app.post('/api/agent/start', (req, res) => {
 
     runningAgents.set(serial, agentProcess);
 
-    // Automatically trigger Termux agent execution on the mobile device over USB
-    console.log(`[*] Remotely launching Termux agent on handset: ${serial}`);
-    exec(`adb -s ${serial} shell monkey -p com.termux -c android.intent.category.LAUNCHER 1`, (err) => {
-        if (!err) {
-            setTimeout(() => {
-                // Split command execution sequence for reliability (escaping spaces)
-                exec(`adb -s ${serial} shell input text "cd\\ /data/data/com.termux/files/home/hybrid-agent" && adb -s ${serial} shell input keyevent 66`, (err2) => {
-                    if (!err2) {
-                        setTimeout(() => {
-                            exec(`adb -s ${serial} shell input text "bash\\ start_agent.sh" && adb -s ${serial} shell input keyevent 66`);
-                        }, 500);
-                    }
-                });
-            }, 2000);
-        }
-    });
-
-    res.json({ status: "success", message: `Agent successfully started for device ${serial}` });
+    res.json({ status: "success", message: `Host-side ADB bridge agent successfully started for device ${serial}` });
 });
 
 // POST /api/agent/stop - stops agent for a device serial

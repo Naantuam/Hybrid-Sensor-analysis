@@ -76,22 +76,46 @@ const commands = {
                         }
                         i += 2; // Skip multi-line block
                     }
-                    // Layout 2: Single-line legacy format
-                    else {
-                        const pkgMatch = line.match(/([\w\.]+)\s*\|\s*Sensor:\s*([\w\s]+)/);
-                        if (pkgMatch) {
-                            const rateMatch = line.match(/Rate:\s*(\d+)Hz/);
-                            const uidMatch = line.match(/UID:\s*(\d+)/);
-                            appsList.push({
-                                package: pkgMatch[1],
-                                sensor: pkgMatch[2].trim(),
-                                rate: rateMatch ? parseInt(rateMatch[1]) : 50,
-                                uid: uidMatch ? uidMatch[1] : "unknown",
-                                state: line.includes('BACKGROUND') ? 'BACKGROUND' : 'FOREGROUND',
-                                screenOff: line.includes('ScreenOff'),
-                                foregroundService: line.includes('ForegroundService'),
-                                proximityEngaged: pkgMatch[2].toLowerCase().includes('proximity')
+                    // Layout 2: Standard Android 10+ single-line format
+                    else if (line.includes('|') && (line.toLowerCase().includes('sensor') || line.toLowerCase().includes('rate'))) {
+                        const parts = line.split('|').map(p => p.trim());
+                        if (parts.length >= 4) {
+                            const pkgName = parts[1];
+                            const status = parts[2];
+                            const uidPart = parts[3];
+                            
+                            let sensorName = "Unknown";
+                            let rateHz = 50;
+                            let isScreenOff = line.includes('ScreenOff') || line.toLowerCase().includes('screenoff');
+                            let isForegroundService = line.includes('ForegroundService') || line.toLowerCase().includes('foregroundservice');
+
+                            parts.forEach(part => {
+                                const partLower = part.toLowerCase();
+                                if (partLower.startsWith('sensor:') || partLower.includes('sensor ')) {
+                                    const match = part.match(/(?:sensor:?\s*)([^(\n]+)/i);
+                                    if (match) sensorName = match[1].trim();
+                                }
+                                if (partLower.startsWith('rate:') || partLower.includes('rate ')) {
+                                    const match = part.match(/(?:rate:?\s*)(\d+)/i);
+                                    if (match) rateHz = parseInt(match[1]);
+                                }
                             });
+
+                            const uidMatch = uidPart.match(/uid:?\s*(\d+)/i) || line.match(/uid:?\s*(\d+)/i);
+                            const isActive = status.toLowerCase().includes('active') || line.toLowerCase().includes('active');
+
+                            if (isActive && pkgName && !pkgName.startsWith('0x') && pkgName !== 'Connection Number') {
+                                appsList.push({
+                                    package: pkgName,
+                                    sensor: sensorName,
+                                    rate: rateHz,
+                                    uid: uidMatch ? uidMatch[1] : "unknown",
+                                    state: line.includes('BACKGROUND') ? 'BACKGROUND' : 'FOREGROUND',
+                                    screenOff: isScreenOff,
+                                    foregroundService: isForegroundService,
+                                    proximityEngaged: sensorName.toLowerCase().includes('proximity')
+                                });
+                            }
                         }
                     }
                 }
@@ -100,62 +124,115 @@ const commands = {
         }
     },
     audio: {
-        shellCommand: "dumpsys audio && dumpsys media.audio_policy",
+        shellCommand: "dumpsys media.audio_policy && dumpsys audio",
         description: "Audits active microphone recording configurations to detect microphone usage",
-        parse: (stdout) => {
+        parse: (stdout, uidToPackageMap) => {
             const list = [];
             const lines = stdout.split('\n');
             const activeRecords = new Set();
+            
+            // 1. MediaTek/Infinix Transaction-based Recording State Parser
+            const riidMap = new Map();
+            
+            // 2. Standard Android section trackers
+            let inActiveRecordClients = false;
+            let currentRecord = null;
 
             lines.forEach(line => {
-                const trimmed = line.trim().toLowerCase();
+                const trimmed = line.trim();
+                const lower = trimmed.toLowerCase();
 
-                // Look for active recording client contexts
-                const isRecordLine = trimmed.includes('client:') || 
-                                     trimmed.includes('package') || 
-                                     trimmed.includes('pack:') || 
-                                     trimmed.includes('rec start');
+                // Parse MediaTek/Infinix log event records: e.g. "rec start riid:43711 uid:10224 session:44177 src:CAMCORDER pack:com.whatsapp"
+                const matchEvent = trimmed.match(/rec\s+(start|stop|update)\s+riid:(\d+)\s+uid:(\d+)\s+session:\d+\s+src:\w+\s+pack:([\w\.]+)/i);
+                if (matchEvent) {
+                    const action = matchEvent[1].toLowerCase();
+                    const riid = matchEvent[2];
+                    const uid = matchEvent[3];
+                    const pkgName = matchEvent[4];
 
-                if (isRecordLine) {
-                    // Check if this line is in record / capture / recording scope
-                    const isRecording = trimmed.includes('record') || 
-                                        trimmed.includes('recording') || 
-                                        trimmed.includes('capture') || 
-                                        trimmed.includes('rec');
+                    if (action === 'start' || action === 'update') {
+                        riidMap.set(riid, { uid, package: pkgName });
+                    } else if (action === 'stop') {
+                        riidMap.delete(riid);
+                    }
+                    return;
+                }
 
-                    if (isRecording) {
-                        const pkgMatch = line.match(/(?:Client|client|package|pack|package=):\s*"?([\w\.]+)"?/i) ||
-                                         line.match(/(?:client|pack):\s*([\w\.]+)/i) ||
-                                         line.match(/package\s+([\w\.]+)/i);
+                // Detect start of Active record clients section
+                if (lower.includes('active record clients:') || lower.includes('active record client')) {
+                    inActiveRecordClients = true;
+                    return;
+                }
 
-                        const uidMatch = line.match(/uid:?(\d+)/i) || line.match(/uid\s+(\d+)/i);
+                // Detect end of section by looking for other header patterns
+                if (inActiveRecordClients && (trimmed.startsWith('-') && !trimmed.startsWith('- Session') && !trimmed.startsWith('- Session:'))) {
+                    if (!lower.includes('session')) {
+                        inActiveRecordClients = false;
+                    }
+                }
 
-                        if (pkgMatch && pkgMatch[1]) {
-                            const pkgName = pkgMatch[1];
-                            if (pkgName !== "android" && pkgName !== "system") {
-                                activeRecords.add(JSON.stringify({
-                                    package: pkgName,
-                                    uid: uidMatch ? uidMatch[1] : "1000"
-                                }));
-                            }
+                // Parse standard session attributes
+                if (inActiveRecordClients) {
+                    if (lower.startsWith('session:') || lower.startsWith('- session:')) {
+                        if (currentRecord && currentRecord.uid) {
+                            activeRecords.add(JSON.stringify(currentRecord));
                         }
+                        currentRecord = { uid: null, package: null };
+                    }
+                    
+                    const uidMatch = trimmed.match(/uid:?\s*(\d+)/i) || trimmed.match(/uid\s+(\d+)/i);
+                    if (uidMatch && currentRecord) {
+                        currentRecord.uid = uidMatch[1];
+                    }
+                }
+
+                // Support flat RecordActivity lists on some versions
+                if (lower.includes('recordactivity') || lower.includes('rec start')) {
+                    const uidMatch = trimmed.match(/uid:?\s*(\d+)/i) || trimmed.match(/uid\s+(\d+)/i);
+                    const pkgMatch = trimmed.match(/(?:Client|client|package|pack|package=):\s*"?([\w\.]+)"?/i) ||
+                                     trimmed.match(/(?:client|pack):\s*([\w\.]+)/i) ||
+                                     trimmed.match(/package\s+([\w\.]+)/i);
+
+                    if (uidMatch) {
+                        activeRecords.add(JSON.stringify({
+                            uid: uidMatch[1],
+                            package: pkgMatch ? pkgMatch[1] : null
+                        }));
                     }
                 }
             });
 
+            // Flush last standard parsed record
+            if (inActiveRecordClients && currentRecord && currentRecord.uid) {
+                activeRecords.add(JSON.stringify(currentRecord));
+            }
+
+            // Append all active transactions from MediaTek map to activeRecords
+            riidMap.forEach(record => {
+                activeRecords.add(JSON.stringify(record));
+            });
+
             activeRecords.forEach((recordStr) => {
                 const record = JSON.parse(recordStr);
-                list.push({
-                    package: record.package,
-                    uid: record.uid,
-                    state: "FOREGROUND",
-                    sensor: "Microphone",
-                    rate: 1,
-                    screenOff: false,
-                    foregroundService: true,
-                    proximityEngaged: false
-                });
+                let pkgName = record.package;
+                if (!pkgName && record.uid && uidToPackageMap) {
+                    pkgName = uidToPackageMap.get(record.uid);
+                }
+                
+                if (pkgName && pkgName !== "android" && pkgName !== "system") {
+                    list.push({
+                        package: pkgName,
+                        uid: record.uid || "1000",
+                        state: "FOREGROUND",
+                        sensor: "Microphone",
+                        rate: 1,
+                        screenOff: false,
+                        foregroundService: true,
+                        proximityEngaged: false
+                    });
+                }
             });
+
             return list;
         }
     },
@@ -218,26 +295,35 @@ const commands = {
                 
                 // Matches active location requests in dumpsys (Android 10-15: "request: WorkSource{10123 com.google.android.apps.maps}")
                 // Matches legacy Android 10 layout: "UpdateRecord[gps com.whatsapp(10123)]"
-                const requestMatch = trimmed.match(/WorkSource\{\s*(\d+)\s+([\w\.]+)\s*\}/) ||
-                                     trimmed.match(/UpdateRecord\[\w+\s+([\w\.]+)\((\d+)\)/) ||
-                                     trimmed.match(/receiver:\s*([\w\.]+)\s*\(uid\s+(\d+)\)/);
+                const wsMatch = trimmed.match(/WorkSource\{\s*(\d+)\s+([\w\.]+)\s*\}/);
+                const urMatch = trimmed.match(/UpdateRecord\[\w+\s+([\w\.]+)\((\d+)\)/);
+                const rcMatch = trimmed.match(/receiver:\s*([\w\.]+)\s*\(uid\s+(\d+)\)/);
+                
+                let pkgName = null;
+                let uid = null;
+
+                if (wsMatch) {
+                    uid = wsMatch[1];
+                    pkgName = wsMatch[2];
+                } else if (urMatch) {
+                    pkgName = urMatch[1];
+                    uid = urMatch[2];
+                } else if (rcMatch) {
+                    pkgName = rcMatch[1];
+                    uid = rcMatch[2];
+                }
                                      
-                if (requestMatch) {
-                    const pkgName = requestMatch[2] || requestMatch[1];
-                    const uid = requestMatch[1] || requestMatch[2];
-                    
-                    if (pkgName && pkgName !== 'android' && pkgName !== 'system') {
-                        list.push({
-                            package: pkgName,
-                            uid: uid,
-                            state: "FOREGROUND",
-                            sensor: trimmed.toLowerCase().includes('gps') ? 'GPS_Location' : 'Network_Location',
-                            rate: 1,
-                            screenOff: false,
-                            foregroundService: true,
-                            proximityEngaged: false
-                        });
-                    }
+                if (pkgName && pkgName !== 'android' && pkgName !== 'system') {
+                    list.push({
+                        package: pkgName,
+                        uid: uid || "unknown",
+                        state: "FOREGROUND",
+                        sensor: trimmed.toLowerCase().includes('gps') ? 'GPS_Location' : 'Network_Location',
+                        rate: 1,
+                        screenOff: false,
+                        foregroundService: true,
+                        proximityEngaged: false
+                    });
                 }
             });
             return list;
@@ -252,27 +338,37 @@ const commands = {
             let inScannerMap = false;
 
             for (let line of lines) {
-                if (line.includes('GATT Scanner Map')) {
+                const trimmed = line.trim();
+                const lower = trimmed.toLowerCase();
+
+                if (lower.includes('gatt scanner map')) {
                     inScannerMap = true;
                     continue;
                 }
-                if (inScannerMap && line.trim() === '') {
+                
+                // If we reach another header section, exit the scanner map scan
+                if (inScannerMap && (trimmed.startsWith('==') || lower.includes('bluetooth status') || lower.includes('active services') || lower.includes('bonded devices:'))) {
                     inScannerMap = false;
                 }
 
                 if (inScannerMap) {
-                    const match = line.match(/([\w\.]+)(?=\s+\(|:)/);
-                    if (match && match[1] !== 'Client' && match[1] !== 'App') {
-                        list.push({
-                            package: match[1],
-                            uid: "unknown",
-                            state: "FOREGROUND",
-                            sensor: "Bluetooth_Scan",
-                            rate: 1,
-                            screenOff: false,
-                            foregroundService: true,
-                            proximityEngaged: false
-                        });
+                    // Match pattern: "com.google.uid.shared:10132 (Registered)"
+                    const match = trimmed.match(/^\s*([a-zA-Z][\w\.]+):(\d+)\s*\((Registered|Active)/i);
+                    if (match) {
+                        const pkgName = match[1];
+                        const uid = match[2];
+                        if (pkgName !== 'android' && pkgName !== 'system') {
+                            list.push({
+                                package: pkgName,
+                                uid: uid,
+                                state: "FOREGROUND",
+                                sensor: "Bluetooth_Scan",
+                                rate: 1,
+                                screenOff: false,
+                                foregroundService: true,
+                                proximityEngaged: false
+                            });
+                        }
                     }
                 }
             }
