@@ -38,6 +38,11 @@ const {
 } = require('./db');
 const { evaluatePacket } = require('./rules');
 
+// Alert cooldown cache: suppress duplicate threat alerts for the same app+sensor within 5 minutes
+// Key: "package:sensor" -> last alert timestamp (ms)
+const alertCooldownMap = new Map();
+const ALERT_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
+
 // Initialize the Web Server
 const app = express();
 app.use(cors());
@@ -72,6 +77,18 @@ function getSuspiciousAccessibilityServices(packages) {
 }
 
 /**
+ * Broadcasts a packet to all connected WebSocket dashboard clients
+ */
+function broadcastToClients(packet) {
+    const jsonStr = typeof packet === 'string' ? packet : JSON.stringify(packet);
+    wss.clients.forEach((client) => {
+        if (client.readyState === WebSocket.OPEN) {
+            client.send(jsonStr);
+        }
+    });
+}
+
+/**
  * Broadcasts the current active online sessions to all dashboard clients
  */
 function broadcastActiveSessions() {
@@ -80,11 +97,7 @@ function broadcastActiveSessions() {
         event_type: "active_sessions_sync",
         sessions: sessionIds
     };
-    wss.clients.forEach((client) => {
-        if (client.readyState === WebSocket.OPEN) {
-            client.send(JSON.stringify(syncPayload));
-        }
-    });
+    broadcastToClients(syncPayload);
 }
 
 // Initialize database tables
@@ -261,20 +274,25 @@ async function processTelemetryPacket(packet, ws, clientIp) {
             const rulesInputPacket = {
                 metadata: {
                     device_id: sessionInfo.deviceId,
+                    app_package: app_package,
                     app_state: app_state,
                     screen_state: metadata?.screen_state || "ON",
                     has_foreground_service: !!metadata?.has_foreground_service,
-                    accessibility_warnings: getSuspiciousAccessibilityServices(metadata?.enabled_accessibility_services)
+                    install_source: metadata?.install_source || null,
+                    accessibility_warnings: getSuspiciousAccessibilityServices(metadata?.enabled_accessibility_services),
+                    sensor_name: sensor_name
                 },
                 payload: {
+                    sensor_name: sensor_name,
                     mic_active: sensor_name === "Microphone",
                     camera_active: sensor_name === "Camera",
-                    gps_active: sensor_name === "GPS" || sensor_name === "GPS_Location" || sensor_name === "Network_Location",
+                    gps_active: sensor_name === "GPS" || sensor_name === "GPS_Location" || sensor_name === "Network_Location" || sensor_name === "Passive_Location",
                     ble_scan_active: sensor_name === "Bluetooth_Scan",
                     biometric_active: sensor_name === "Biometric_Auth",
                     proximity_engaged: !!payload?.proximity_engaged,
                     motion_freq: sensor_name === "Accelerometer" || sensor_name === "Gyroscope" ? polling_rate_hz : 0,
-                    light_freq: sensor_name === "Light" ? polling_rate_hz : 0
+                    light_freq: sensor_name === "Light" ? polling_rate_hz : 0,
+                    active_sensors: metadata?.active_sensors || []
                 }
             };
 
@@ -283,6 +301,14 @@ async function processTelemetryPacket(packet, ws, clientIp) {
 
             // If threat is SUSPICIOUS or CRITICAL, record and broadcast alert
             if (evaluation.threatLevel !== "BENIGN") {
+                const cooldownKey = `${app_package}:${sensor_name}`;
+                const lastAlerted = alertCooldownMap.get(cooldownKey) || 0;
+                const now = Date.now();
+
+                if (now - lastAlerted < ALERT_COOLDOWN_MS) {
+                    // Cooldown active: suppress duplicate alert
+                } else {
+                alertCooldownMap.set(cooldownKey, now);
                 console.log(`\n[!] Security Threat Triggered: [Level: ${evaluation.threatLevel}] [Score: ${evaluation.totalScore}]`);
                 console.log(`[!] Application: ${app_package} | Sensor: ${sensor_name}`);
                 
@@ -337,6 +363,7 @@ async function processTelemetryPacket(packet, ws, clientIp) {
                         client.send(JSON.stringify(alertPayload));
                     }
                 });
+                } // end cooldown else
             }
         } catch (e) {
             console.error(`[!] Error processing incoming telemetry packet: ${e.message}`);
@@ -419,10 +446,10 @@ const runAdbCommand = (command) => {
     });
 };
 
-// USB Auto-detect endpoint
+// USB / Wireless ADB Auto-detect endpoint
 app.get('/api/usb-detect', async (req, res) => {
     try {
-        exec('adb devices', async (err, stdout) => {
+        exec('adb devices -l', async (err, stdout) => {
             if (err) {
                 return res.json({ status: "error", message: "ADB not available", devices: [] });
             }
@@ -432,14 +459,16 @@ app.get('/api/usb-detect', async (req, res) => {
             
             for (let line of lines) {
                 const parts = line.trim().split(/\s+/);
-                if (parts.length === 2 && parts[1] === 'device') {
+                if (parts.length >= 2 && parts[1] === 'device') {
                     const serial = parts[0];
+                    const isWireless = serial.includes(':');
                     
-                    const [model, version, sdk, abi] = await Promise.all([
+                    const [model, version, sdk, abi, manufacturer] = await Promise.all([
                         runAdbCommand(`adb -s ${serial} shell getprop ro.product.model`),
                         runAdbCommand(`adb -s ${serial} shell getprop ro.build.version.release`),
                         runAdbCommand(`adb -s ${serial} shell getprop ro.build.version.sdk`),
-                        runAdbCommand(`adb -s ${serial} shell getprop ro.product.cpu.abi`)
+                        runAdbCommand(`adb -s ${serial} shell getprop ro.product.cpu.abi`),
+                        runAdbCommand(`adb -s ${serial} shell getprop ro.product.manufacturer`)
                     ]);
                     
                     if (version && parseInt(version) < 10) {
@@ -455,9 +484,11 @@ app.get('/api/usb-detect', async (req, res) => {
                     devices.push({
                         serial,
                         model: model || "Unknown Device",
-                        androidVersion: version || "Unknown",
-                        sdkLevel: sdk || "Unknown",
-                        abi: abi || "Unknown",
+                        manufacturer: manufacturer || "Android Device",
+                        androidVersion: version || "10",
+                        sdkLevel: sdk || "29",
+                        abi: abi || "arm64-v8a",
+                        connectionType: isWireless ? "wireless_adb" : "usb_adb",
                         profile
                     });
                 }
@@ -469,6 +500,44 @@ app.get('/api/usb-detect', async (req, res) => {
         res.status(500).json({ error: e.message });
     }
 });
+
+// Background loop: Periodically scans adb devices -l every 4 seconds, broadcasts connected devices, and auto-launches bridge
+setInterval(() => {
+    exec('adb devices -l', (err, stdout) => {
+        if (err || !stdout) return;
+        const lines = stdout.split('\n');
+        const connectedSerials = [];
+        let unauthorizedFound = false;
+
+        for (let line of lines) {
+            const parts = line.trim().split(/\s+/);
+            if (parts.length >= 2) {
+                const serial = parts[0];
+                const status = parts[1];
+
+                if (status === 'device') {
+                    connectedSerials.push(serial);
+                    if (!runningAgents.has(serial)) {
+                        launchAgentBridge(serial);
+                    }
+                } else if (status === 'unauthorized') {
+                    unauthorizedFound = true;
+                }
+            }
+        }
+
+        if (unauthorizedFound) {
+            broadcastSystemLog("HIGH", "📲 Handset Authorization Required: Please unlock your phone screen and tap 'ALLOW' on the debugging prompt.");
+        }
+
+        if (connectedSerials.length > 0) {
+            broadcastToClients({
+                event_type: "active_adb_sync",
+                serials: connectedSerials
+            });
+        }
+    });
+}, 4000);
 
 // Get all sessions
 app.get('/api/sessions', async (req, res) => {
@@ -689,48 +758,18 @@ app.get('/download/start_agent.sh', (req, res) => {
 // Track running host-side ADB agent processes keyed by device serial
 const runningAgents = new Map();
 
-// POST /api/agent/start - starts agent for a device serial
-app.post('/api/agent/start', (req, res) => {
-    const { serial, connectionType } = req.body;
-    if (!serial) {
-        return res.status(400).json({ status: "error", message: "Device serial is required" });
-    }
+// Helper to launch host-side ADB bridge process
+function launchAgentBridge(serial, connectionType) {
+    if (runningAgents.has(serial)) return false;
 
-    // Determine connection mode based on explicit connectionType or serial format fallback
     const mode = connectionType || (serial.includes(':') ? 'wireless_adb' : 'usb_adb');
-
-    if (mode === 'local_termux' || mode === 'cloud_internet') {
-        // Native Mode: Trigger Termux app launch and script execution on the mobile device over USB/ADB
-        console.log(`[*] Remotely booting Termux native agent on handset over ADB: ${serial}`);
-        exec(`adb -s ${serial} shell monkey -p com.termux -c android.intent.category.LAUNCHER 1`, (err) => {
-            if (err) {
-                console.error(`[!] Failed to launch Termux via monkey: ${err.message}`);
-                return res.status(500).json({ status: "error", error: "Could not launch Termux app on the device" });
-            }
-            setTimeout(() => {
-                exec(`adb -s ${serial} shell input text "cd\\ /data/data/com.termux/files/home/hybrid-agent" && adb -s ${serial} shell input keyevent 66`, (err2) => {
-                    if (!err2) {
-                        setTimeout(() => {
-                            exec(`adb -s ${serial} shell input text "bash\\ start_agent.sh" && adb -s ${serial} shell input keyevent 66`);
-                        }, 500);
-                    }
-                });
-            }, 2000);
-        });
-        return res.json({ status: "success", message: `Native Termux agent boot command sent to device ${serial}` });
-    }
-
-    // ADB Bridge Mode: Spawn host-side ADB agent process on Kali
-    if (runningAgents.has(serial)) {
-        return res.json({ status: "success", message: "Agent is already running for this device" });
-    }
-
-    const port = server.address ? (server.address().port || PORT) : PORT;
+    const port = process.env.PORT || 4444;
     const wsUrl = `ws://localhost:${port}`;
-
     const agentPath = path.join(__dirname, 'agent', 'sensor_agent.js');
-    console.log(`[*] Spawning host-side ADB bridge agent for device: ${serial} (Mode: ${mode})`);
     
+    console.log(`[*] Auto-launching host-side ADB bridge agent for device: ${serial} (Mode: ${mode})`);
+    broadcastSystemLog("INFO", `[*] Auto-launching telemetry bridge for connected device: ${serial}`, serial);
+
     const agentProcess = spawn('node', [agentPath, wsUrl, '-s', serial]);
 
     agentProcess.stdout.on('data', (data) => {
@@ -747,7 +786,42 @@ app.post('/api/agent/start', (req, res) => {
     });
 
     runningAgents.set(serial, agentProcess);
+    return true;
+}
 
+// POST /api/agent/start - starts agent for a device serial
+app.post('/api/agent/start', (req, res) => {
+    const { serial, connectionType } = req.body;
+    if (!serial) {
+        return res.status(400).json({ status: "error", message: "Device serial is required" });
+    }
+
+    const mode = connectionType || (serial.includes(':') ? 'wireless_adb' : 'usb_adb');
+
+    if (mode === 'local_termux' || mode === 'cloud_internet') {
+        console.log(`[*] Remotely booting Termux native agent on handset over ADB: ${serial}`);
+        exec(`adb -s ${serial} shell monkey -p com.termux -c android.intent.category.LAUNCHER 1`, (err) => {
+            if (err) {
+                return res.status(500).json({ status: "error", error: "Could not launch Termux app on the device" });
+            }
+            setTimeout(() => {
+                exec(`adb -s ${serial} shell input text "cd\\ /data/data/com.termux/files/home/hybrid-agent" && adb -s ${serial} shell input keyevent 66`, (err2) => {
+                    if (!err2) {
+                        setTimeout(() => {
+                            exec(`adb -s ${serial} shell input text "bash\\ start_agent.sh" && adb -s ${serial} shell input keyevent 66`);
+                        }, 500);
+                    }
+                });
+            }, 2000);
+        });
+        return res.json({ status: "success", message: `Native Termux agent boot command sent to device ${serial}` });
+    }
+
+    if (runningAgents.has(serial)) {
+        return res.json({ status: "success", message: "Agent is already running for this device" });
+    }
+
+    launchAgentBridge(serial, mode);
     res.json({ status: "success", message: `Host-side ADB bridge agent successfully started for device ${serial}` });
 });
 
@@ -786,43 +860,135 @@ app.get('/api/agent/status', (req, res) => {
     res.json({ status: "success", activeSerials });
 });
 
-// POST /api/agent/prepare-wireless - automatically resolves Wi-Fi IP and sets tcpip 5555 over USB
+// Helper to broadcast system operational logs to Live Console
+const broadcastSystemLog = (threat_level, msgText, devId = 'System') => {
+    broadcastToClients({
+        event_type: "security_alert",
+        payload: { app_package: msgText, threat_level, score: 0, session_id: 0 },
+        metadata: { device_id: devId, timestamp: new Date().toISOString() }
+    });
+};
+
+// POST /api/agent/prepare-wireless - strict 3-step sequential USB-to-Wi-Fi handoff
 app.post('/api/agent/prepare-wireless', async (req, res) => {
-    const { serial } = req.body;
-    if (!serial) {
-        return res.status(400).json({ status: "error", message: "Device serial is required" });
+    let { serial } = req.body;
+    let activeSerial = "";
+
+    broadcastSystemLog("INFO", "[*] Step 1: Querying hardware serial from adb devices -l...");
+
+    // STEP 1: Query adb devices -l to find real hardware serial (resolves model names like 'Infinix_X683')
+    const findUsbDevice = async (inputSerial) => {
+        const devicesOutput = await runAdbCommand('adb devices -l');
+        const lines = devicesOutput.split('\n');
+        
+        let exactMatch = "";
+        let modelMatch = "";
+        let firstUsb = "";
+
+        for (const line of lines) {
+            const parts = line.trim().split(/\s+/);
+            if (parts.length >= 2 && parts[1] === 'device' && !parts[0].includes(':')) {
+                const hardwareSerial = parts[0];
+                if (!firstUsb) firstUsb = hardwareSerial;
+
+                if (inputSerial && hardwareSerial === inputSerial) {
+                    exactMatch = hardwareSerial;
+                }
+
+                if (inputSerial && line.toLowerCase().includes(inputSerial.toLowerCase())) {
+                    modelMatch = hardwareSerial;
+                }
+            }
+        }
+        return exactMatch || modelMatch || firstUsb;
+    };
+
+    activeSerial = await findUsbDevice(serial);
+
+    // FALLBACK 1: If ADB is unresponsive or no USB device is found, restart ADB server and re-check
+    if (!activeSerial) {
+        console.warn("[!] No active USB device found. Executing Fallback 1: Restarting ADB server...");
+        broadcastSystemLog("HIGH", "[!] No active USB device found. Restarting ADB server daemon...");
+        await runAdbCommand('adb kill-server');
+        await runAdbCommand('adb start-server');
+        activeSerial = await findUsbDevice(serial);
     }
 
+    if (!activeSerial) {
+        broadcastSystemLog("HIGH", "[!] Step 1 Failed: USB device not attached or unauthorized.");
+        return res.status(400).json({ status: "error", message: "No active USB device attached. Please connect your phone via USB cable and ensure USB debugging is allowed." });
+    }
+
+    console.log(`[+] Step 1 Completed: Target USB Device Serial is ${activeSerial}`);
+    broadcastSystemLog("INFO", `[+] Step 1 Completed: Target USB Device Serial is ${activeSerial}`, activeSerial);
+
     try {
-        // Query wlan0, wlan1 or ap0 adapters specifically to find local Wi-Fi/hotspot interface IP
-        const output = await runAdbCommand(`adb -s ${serial} shell "ip addr show wlan0 || ip addr show wlan1 || ip addr show ap0"`);
+        // STEP 2: Get IP Address directly from adb shell ip route
+        broadcastSystemLog("INFO", `[*] Step 2: Querying handset kernel routing table (ip route)...`, activeSerial);
+        const ipRouteOut = await runAdbCommand(`adb -s ${activeSerial} shell "ip route"`);
         let ip = "";
-        if (output) {
-            const matches = output.match(/inet\s+([\d\.]+)/g);
-            if (matches) {
-                for (let match of matches) {
-                    const parsedIp = match.match(/inet\s+([\d\.]+)/)[1];
-                    if (parsedIp && parsedIp !== "127.0.0.1") {
-                        ip = parsedIp;
+
+        if (ipRouteOut) {
+            const lines = ipRouteOut.split('\n');
+            
+            // Prioritize lines matching Wi-Fi/Hotspot adapters (ap, wlan, swlan) or 192.168 / 172 subnets
+            for (const line of lines) {
+                if (/wlan|ap|swlan|wifi/.test(line) || line.includes('192.168.') || line.includes('172.')) {
+                    const match = line.match(/src\s+([\d\.]+)/);
+                    if (match && match[1] !== "127.0.0.1" && !match[1].startsWith("10.0.2.")) {
+                        ip = match[1];
+                        break;
+                    }
+                }
+            }
+
+            // Fallback: pick any valid non-loopback src IP from routing table if specific adapter line missed
+            if (!ip) {
+                for (const line of lines) {
+                    const match = line.match(/src\s+([\d\.]+)/);
+                    if (match && match[1] !== "127.0.0.1" && !match[1].startsWith("10.0.2.")) {
+                        ip = match[1];
                         break;
                     }
                 }
             }
         }
 
+        // Secondary Fallback: query ip -4 addr show if routing table output was empty
         if (!ip) {
-            return res.status(400).json({ status: "error", message: "Failed to resolve Wi-Fi IP address on the handset. Please verify Wi-Fi or Hotspot is active." });
+            broadcastSystemLog("INFO", `[*] Step 2 Fallback: Querying adapter interfaces (ip -4 addr show)...`, activeSerial);
+            const ipAddrOut = await runAdbCommand(`adb -s ${activeSerial} shell "ip -4 addr show"`);
+            const inetMatches = [...ipAddrOut.matchAll(/inet\s+([\d\.]+)/g)];
+            for (const m of inetMatches) {
+                const candidateIp = m[1];
+                if (candidateIp && candidateIp !== "127.0.0.1" && !candidateIp.startsWith("10.0.2.")) {
+                    ip = candidateIp;
+                    break;
+                }
+            }
         }
 
-        console.log(`[*] Opening wireless TCP/IP debug port 5555 on device ${serial}`);
-        exec(`adb -s ${serial} tcpip 5555`, (err) => {
-            if (err) {
-                return res.status(500).json({ status: "error", message: `Failed to enable TCP/IP port: ${err.message}` });
-            }
-            res.json({ status: "success", ip });
-        });
+        if (!ip) {
+            broadcastSystemLog("HIGH", `[!] Step 2 Failed: Could not find Wi-Fi IP address on handset.`, activeSerial);
+            return res.status(400).json({ status: "error", message: "Failed to resolve Wi-Fi IP address on the handset. Please verify Wi-Fi or Hotspot is active on the handset." });
+        }
+
+        console.log(`[+] Step 2 Completed: Target Handset IP is ${ip}`);
+        broadcastSystemLog("INFO", `[+] Step 2 Completed: Handset live Wi-Fi IP resolved: "${ip}"`, activeSerial);
+
+        // STEP 3: ONLY IF Serial AND IP are gotten, enable adb tcpip 5555
+        console.log(`[+] Step 3: Enabling TCP/IP mode on port 5555 for ${activeSerial}...`);
+        broadcastSystemLog("INFO", `[*] Step 3: Enabling TCP mode on port 5555 for ${activeSerial}...`, activeSerial);
+        await runAdbCommand(`adb -s ${activeSerial} tcpip 5555`);
+        broadcastSystemLog("INFO", `[+] Step 3 Completed: TCP port 5555 active for ${ip}! Ready to connect.`, activeSerial);
+
+        return res.json({ status: "success", ip, serial: activeSerial });
     } catch (e) {
-        res.status(500).json({ status: "error", message: e.message });
+        console.error(`[!] Step Execution Error: ${e.message}. Executing Fallback reset...`);
+        broadcastSystemLog("HIGH", `[!] Handset IP Resolution Error: ${e.message}. Restarting ADB daemon...`, activeSerial);
+        await runAdbCommand('adb kill-server');
+        await runAdbCommand('adb start-server');
+        return res.status(500).json({ status: "error", message: `Handset connection error: ${e.message}` });
     }
 });
 
@@ -835,12 +1001,19 @@ app.post('/api/agent/connect-wireless', (req, res) => {
     
     const targetSerial = `${ip}:5555`;
     console.log(`[*] Connecting to wireless target: ${targetSerial}`);
+    broadcastToClients({
+        event_type: "security_alert",
+        payload: { app_package: "ADB_Subsystem", threat_level: "INFO", score: 0, session_id: 0 },
+        metadata: { device_id: targetSerial, timestamp: new Date().toISOString() }
+    });
+
     exec(`adb connect ${targetSerial}`, (err, stdout) => {
         if (err) {
+            console.error(`[!] ADB Connect Error: ${err.message}`);
             return res.status(500).json({ status: "error", error: err.message });
         }
         
-        // Give the ADB daemon 1 second to exchange keys and register status
+        // Give the ADB daemon 1.5 seconds to exchange keys and register status
         setTimeout(() => {
             exec('adb devices', (errDevices, stdoutDevices) => {
                 if (errDevices) {
@@ -858,9 +1031,17 @@ app.post('/api/agent/connect-wireless', (req, res) => {
                     }
                 }
 
+                if (deviceStatus === "device") {
+                    console.log(`[+] ADB Status for ${targetSerial}: AUTHORIZED (device)`);
+                } else if (deviceStatus === "unauthorized") {
+                    console.warn(`[!] ADB Status for ${targetSerial}: UNAUTHORIZED (Pending RSA key approval on phone)`);
+                } else {
+                    console.warn(`[!] ADB Status for ${targetSerial}: OFFLINE (Port 5555 closed or IP changed)`);
+                }
+
                 res.json({ status: "success", deviceStatus });
             });
-        }, 1000);
+        }, 1500);
     });
 });
 
