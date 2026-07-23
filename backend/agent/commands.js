@@ -128,13 +128,21 @@ const commands = {
         description: "Audits active microphone recording configurations to detect microphone usage",
         parse: (stdout, uidToPackageMap) => {
             const list = [];
+            if (!stdout) return list;
             const lines = stdout.split('\n');
-            const activeRecords = new Set();
-            
-            // 1. MediaTek/Infinix Transaction-based Recording State Parser
+            const activePackages = new Map(); // pkgName -> uid
+
+            // riidMap tracks open recording sessions (rec start -> add, rec stop -> remove)
             const riidMap = new Map();
-            
-            // 2. Standard Android section trackers
+            // focusMap tracks the MOST RECENT requestAudioFocus per package (timestamp -> pkg)
+            const focusMap = new Map(); // pkg -> { uid, timestamp }
+
+            // Determine today's date prefix (MM-DD) for filtering historical logs
+            const now = new Date();
+            const todayMM = String(now.getMonth() + 1).padStart(2, '0');
+            const todayDD = String(now.getDate()).padStart(2, '0');
+            const todayPrefix = `${todayMM}-${todayDD}`;
+
             let inActiveRecordClients = false;
             let currentRecord = null;
 
@@ -142,87 +150,116 @@ const commands = {
                 const trimmed = line.trim();
                 const lower = trimmed.toLowerCase();
 
-                // Parse MediaTek/Infinix log event records: e.g. "rec start riid:43711 uid:10224 session:44177 src:CAMCORDER pack:com.whatsapp"
-                const matchEvent = trimmed.match(/rec\s+(start|stop|update)\s+riid:(\d+)\s+uid:(\d+)\s+session:\d+\s+src:\w+\s+pack:([\w\.]+)/i);
+                // 1. Parse rec start/stop/update transaction logs
+                // Format: "07-22 15:54:52:000 rec start riid:65119 uid:10224 session:64881 src:MIC pack:com.whatsapp"
+                const matchEvent = trimmed.match(/^(\d{2}-\d{2}).*rec\s+(start|stop|update)\s+riid:(\d+)\s+uid:(\d+)\s+session:\d+\s+src:\w+\s+pack:([\w\.]+)/i);
                 if (matchEvent) {
-                    const action = matchEvent[1].toLowerCase();
-                    const riid = matchEvent[2];
-                    const uid = matchEvent[3];
-                    const pkgName = matchEvent[4];
+                    const datePrefix = matchEvent[1]; // MM-DD
+                    const action = matchEvent[2].toLowerCase();
+                    const riid = matchEvent[3];
+                    const uid = matchEvent[4];
+                    let pkgName = matchEvent[5];
+
+                    if (!pkgName.includes('.') && uidToPackageMap && uidToPackageMap.has(uid)) {
+                        pkgName = uidToPackageMap.get(uid);
+                    }
 
                     if (action === 'start' || action === 'update') {
-                        riidMap.set(riid, { uid, package: pkgName });
+                        // Only track recordings that started TODAY to avoid stale entries
+                        if (datePrefix === todayPrefix) {
+                            riidMap.set(riid, { uid, package: pkgName });
+                        }
                     } else if (action === 'stop') {
                         riidMap.delete(riid);
                     }
-                    return;
                 }
 
-                // Detect start of Active record clients section
+                // 2. Parse requestAudioFocus — keep only the most recent entry per package
+                // Format: "07-22 15:54:52:000 requestAudioFocus() from uid/pid 10224/23852 ... callingPack=com.whatsapp req=2"
+                const matchFocus = trimmed.match(/^(\d{2}-\d{2}).*requestAudioFocus\(\).*uid\/pid\s+(\d+)\/(\d+).*callingPack=([\w\.]+)/i) ||
+                                   trimmed.match(/^(\d{2}-\d{2}).*uid\/pid\s+(\d+)\/(\d+).*callingPack=([\w\.]+)/i);
+                if (matchFocus) {
+                    const datePrefix = matchFocus[1];
+                    const uid = matchFocus[2];
+                    let pkg = matchFocus[4];
+
+                    if ((!pkg || !pkg.includes('.')) && uidToPackageMap && uidToPackageMap.has(uid)) {
+                        pkg = uidToPackageMap.get(uid);
+                    }
+
+                    // Only consider today's focus events; store the most recent per pkg
+                    if (pkg && pkg !== 'android' && pkg !== 'system' &&
+                        !SYSTEM_PREFIXES.some(prefix => pkg.startsWith(prefix)) &&
+                        datePrefix === todayPrefix) {
+                        focusMap.set(pkg, { uid, datePrefix });
+                    }
+                }
+
+                // 3. Detect start of Active record clients section
                 if (lower.includes('active record clients:') || lower.includes('active record client')) {
                     inActiveRecordClients = true;
                     return;
                 }
 
-                // Detect end of section by looking for other header patterns
                 if (inActiveRecordClients && (trimmed.startsWith('-') && !trimmed.startsWith('- Session') && !trimmed.startsWith('- Session:'))) {
                     if (!lower.includes('session')) {
                         inActiveRecordClients = false;
                     }
                 }
 
-                // Parse standard session attributes
                 if (inActiveRecordClients) {
                     if (lower.startsWith('session:') || lower.startsWith('- session:')) {
-                        if (currentRecord && currentRecord.uid) {
-                            activeRecords.add(JSON.stringify(currentRecord));
+                        if (currentRecord && currentRecord.package) {
+                            activePackages.set(currentRecord.package, currentRecord.uid || "1000");
                         }
                         currentRecord = { uid: null, package: null };
                     }
-                    
+
                     const uidMatch = trimmed.match(/uid:?\s*(\d+)/i) || trimmed.match(/uid\s+(\d+)/i);
-                    if (uidMatch && currentRecord) {
-                        currentRecord.uid = uidMatch[1];
-                    }
+                    const pkgMatch = trimmed.match(/(?:Client|client|package|pack|package=):\s*"?([\w\.]+)"?/i);
+                    if (uidMatch && currentRecord) currentRecord.uid = uidMatch[1];
+                    if (pkgMatch && currentRecord) currentRecord.package = pkgMatch[1];
                 }
 
-                // Support flat RecordActivity lists on some versions
+                // 4. Support flat RecordActivity / rec start lines
                 if (lower.includes('recordactivity') || lower.includes('rec start')) {
                     const uidMatch = trimmed.match(/uid:?\s*(\d+)/i) || trimmed.match(/uid\s+(\d+)/i);
                     const pkgMatch = trimmed.match(/(?:Client|client|package|pack|package=):\s*"?([\w\.]+)"?/i) ||
-                                     trimmed.match(/(?:client|pack):\s*([\w\.]+)/i) ||
+                                     trimmed.match(/pack:([\w\.]+)/i) ||
                                      trimmed.match(/package\s+([\w\.]+)/i);
 
-                    if (uidMatch) {
-                        activeRecords.add(JSON.stringify({
-                            uid: uidMatch[1],
-                            package: pkgMatch ? pkgMatch[1] : null
-                        }));
+                    let resolvedPkg = pkgMatch ? pkgMatch[1] : null;
+                    if (uidMatch && (!resolvedPkg || !resolvedPkg.includes('.')) && uidToPackageMap && uidToPackageMap.has(uidMatch[1])) {
+                        resolvedPkg = uidToPackageMap.get(uidMatch[1]);
+                    }
+
+                    if (resolvedPkg) {
+                        activePackages.set(resolvedPkg, uidMatch ? uidMatch[1] : "1000");
                     }
                 }
             });
 
-            // Flush last standard parsed record
-            if (inActiveRecordClients && currentRecord && currentRecord.uid) {
-                activeRecords.add(JSON.stringify(currentRecord));
-            }
-
-            // Append all active transactions from MediaTek map to activeRecords
-            riidMap.forEach(record => {
-                activeRecords.add(JSON.stringify(record));
+            // Merge: today-only focus requests into activePackages
+            focusMap.forEach((val, pkg) => {
+                activePackages.set(pkg, val.uid);
             });
 
-            activeRecords.forEach((recordStr) => {
-                const record = JSON.parse(recordStr);
-                let pkgName = record.package;
-                if (!pkgName && record.uid && uidToPackageMap) {
-                    pkgName = uidToPackageMap.get(record.uid);
+            // Include active SAME-DAY recording transactions from riidMap
+            riidMap.forEach(rec => {
+                let pkgName = rec.package;
+                if ((!pkgName || !pkgName.includes('.')) && rec.uid && uidToPackageMap) {
+                    pkgName = uidToPackageMap.get(rec.uid);
                 }
-                
+                if (pkgName) {
+                    activePackages.set(pkgName, rec.uid || "1000");
+                }
+            });
+
+            activePackages.forEach((uid, pkgName) => {
                 if (pkgName && pkgName !== "android" && pkgName !== "system") {
                     list.push({
                         package: pkgName,
-                        uid: record.uid || "1000",
+                        uid: uid || "1000",
                         state: "FOREGROUND",
                         sensor: "Microphone",
                         rate: 1,
@@ -237,47 +274,92 @@ const commands = {
         }
     },
     camera: {
-        shellCommand: "dumpsys media.camera",
+        shellCommand: "dumpsys media.camera || dumpsys camera",
         description: "Checks active clients connected to the camera hardware service",
         parse: (stdout) => {
             const list = [];
             if (!stdout) return list;
             const lines = stdout.split('\n');
-            let isClientSection = false;
+            const invalidWords = new Set(['for', 'instance', 'device', 'client', 'package', 'active', 'null', 'undefined', 'android', 'system']);
+
+            // Track the MOST RECENT event per (package+PID). Only emit if that event is CONNECT.
+            // Event log format: "07-21 23:38:38 : DISCONNECT device 1 client for package com.snapchat.android (PID 31089)"
+            //                   "07-21 23:38:37 : CONNECT device 1 client for package com.snapchat.android (PID 31089)"
+            const lastEventByKey = new Map(); // key: "pkg:PID" -> { type: 'CONNECT'|'DISCONNECT'|'REJECT', pkg, uid }
+            let inActiveSection = false;
 
             lines.forEach(line => {
                 const trimmed = line.trim();
-                
-                // Track start of clients section (Android 10+)
-                if (trimmed.includes("Camera module authority clients:") || trimmed.includes("Active Camera Clients:")) {
-                    isClientSection = true;
+                const lower = trimmed.toLowerCase();
+
+                // Detect the active camera clients section
+                if (lower.includes('active camera clients')) {
+                    inActiveSection = true;
                     return;
                 }
-                // Stop scanning at section boundaries
-                if (isClientSection && (trimmed.startsWith("Allowed user IDs:") || trimmed.startsWith("Device type:"))) {
-                    isClientSection = false;
+                // Stop at next major section header
+                if (inActiveSection && (lower.includes('camera module') || lower.includes('camera device') ||
+                    lower.includes('camera service events') || lower.includes('allowed user'))) {
+                    if (!lower.includes('active camera')) inActiveSection = false;
                 }
 
-                if (isClientSection) {
-                    // Match pattern: Client "com.whatsapp" (API 29-35 formats)
-                    const pkgMatch = trimmed.match(/Client\s+["']?([\w\.]+)["']?/i) ||
-                                     trimmed.match(/client:\s*([\w\.]+)/i) ||
-                                     trimmed.match(/Package\s+([\w\.]+)/i);
-                                     
-                    if (pkgMatch && pkgMatch[1] && pkgMatch[1] !== "android") {
-                        list.push({
-                            package: pkgMatch[1],
-                            uid: "1000",
-                            state: "FOREGROUND",
-                            sensor: "Camera",
-                            rate: 1,
-                            screenOff: false,
-                            foregroundService: true,
-                            proximityEngaged: false
-                        });
+                // Parse event log lines inside active section
+                // Format: "MM-DD HH:MM:SS : TYPE device N client for package com.pkg (PID NNN)"
+                const eventMatch = trimmed.match(/:\s+(CONNECT|DISCONNECT|REJECT)\s+device\s+\d+\s+client\s+for\s+package\s+([\w\.]+)\s*\(PID\s+(\d+)\)/i);
+                if (eventMatch) {
+                    const type = eventMatch[1].toUpperCase();
+                    const pkg = eventMatch[2];
+                    const pid = eventMatch[3];
+                    const key = `${pkg}:${pid}`;
+                    // Only store the first match per key — dumpsys lists newest-first, so first = most recent
+                    if (!lastEventByKey.has(key)) {
+                        lastEventByKey.set(key, { type, pkg, pid });
+                    }
+                    return;
+                }
+
+                // Fallback: match non-event lines for currently open clients (e.g. older Android format)
+                if (!trimmed.match(/^\d{2}-\d{2}/)) {
+                    if (lower.includes('disconnect') || lower.includes('reject')) return;
+                    const pkgMatch = trimmed.match(/client\s+for\s+package\s+([\w\.]+)/i) ||
+                                     trimmed.match(/Client\s+["']([\w\.]+)["']/i) ||
+                                     trimmed.match(/client:\s*([\w\.]+)/i);
+                    if (pkgMatch && pkgMatch[1]) {
+                        const pkgName = pkgMatch[1];
+                        if (pkgName.includes('.') && !invalidWords.has(pkgName.toLowerCase())) {
+                            list.push({
+                                package: pkgName,
+                                uid: "1000",
+                                state: "FOREGROUND",
+                                sensor: "Camera",
+                                rate: 1,
+                                screenOff: false,
+                                foregroundService: true,
+                                proximityEngaged: false
+                            });
+                        }
                     }
                 }
             });
+
+            // Emit only packages whose most recent event is CONNECT (i.e. currently active)
+            const emitted = new Set();
+            lastEventByKey.forEach(({ type, pkg }) => {
+                if (type === 'CONNECT' && pkg.includes('.') && !invalidWords.has(pkg.toLowerCase()) && !emitted.has(pkg)) {
+                    emitted.add(pkg);
+                    list.push({
+                        package: pkg,
+                        uid: "1000",
+                        state: "FOREGROUND",
+                        sensor: "Camera",
+                        rate: 1,
+                        screenOff: false,
+                        foregroundService: true,
+                        proximityEngaged: false
+                    });
+                }
+            });
+
             return list;
         }
     },
@@ -288,37 +370,93 @@ const commands = {
             const list = [];
             if (!stdout) return list;
             const lines = stdout.split('\n');
-            
-            // Standard Android 10-15 Location Manager Provider line patterns
+
+            // Packages known to actively request location (collected from stats summary lines)
+            // Format: "com.google.android.gms: gps: Min interval ... Currently active"
+            //         "android: passive: ... Currently active"
+            const activeFromStats = new Set();
             lines.forEach(line => {
                 const trimmed = line.trim();
-                
-                // Matches active location requests in dumpsys (Android 10-15: "request: WorkSource{10123 com.google.android.apps.maps}")
-                // Matches legacy Android 10 layout: "UpdateRecord[gps com.whatsapp(10123)]"
+                // Stats summary: "pkg: provider: ... Currently active"
+                const statsMatch = trimmed.match(/^([\w\.]+):\s*(gps|network|passive|fused):\s+.*Currently active/i);
+                if (statsMatch) {
+                    const pkg = statsMatch[1];
+                    if (pkg !== 'android' && pkg !== 'system') {
+                        activeFromStats.add(pkg + ':' + statsMatch[2].toLowerCase());
+                    }
+                }
+            });
+
+            // Dedup: only emit each pkg+provider once
+            const emitted = new Set();
+
+            lines.forEach(line => {
+                const trimmed = line.trim();
+
+                // Pattern 1: WorkSource format
+                // "request: WorkSource{10123 com.google.android.apps.maps}"
                 const wsMatch = trimmed.match(/WorkSource\{\s*(\d+)\s+([\w\.]+)\s*\}/);
-                const urMatch = trimmed.match(/UpdateRecord\[\w+\s+([\w\.]+)\((\d+)\)/);
+
+                // Pattern 2: UpdateRecord format (Android 10)
+                // "UpdateRecord[passive com.google.android.gms(10132 foreground) ...]"
+                // "UpdateRecord[gps com.whatsapp(10123)]"
+                const urMatch = trimmed.match(/UpdateRecord\[(\w+)\s+([\w\.]+)\((\d+)/);
+
+                // Pattern 3: receiver format
                 const rcMatch = trimmed.match(/receiver:\s*([\w\.]+)\s*\(uid\s+(\d+)\)/);
-                
+
                 let pkgName = null;
                 let uid = null;
+                let provider = 'gps';
 
                 if (wsMatch) {
                     uid = wsMatch[1];
                     pkgName = wsMatch[2];
                 } else if (urMatch) {
-                    pkgName = urMatch[1];
-                    uid = urMatch[2];
+                    provider = urMatch[1].toLowerCase();
+                    pkgName = urMatch[2];
+                    uid = urMatch[3];
                 } else if (rcMatch) {
                     pkgName = rcMatch[1];
                     uid = rcMatch[2];
                 }
-                                     
-                if (pkgName && pkgName !== 'android' && pkgName !== 'system') {
+
+                // Exclude pure system entries (android, system) but KEEP com.google.android.gms
+                // GMS is an important location actor — intentionally NOT filtered out here
+                const LOCATION_SYSTEM_SKIP = new Set(['android', 'system']);
+
+                if (pkgName && !LOCATION_SYSTEM_SKIP.has(pkgName)) {
+                    const dedupeKey = `${pkgName}:${provider}`;
+                    if (!emitted.has(dedupeKey)) {
+                        emitted.add(dedupeKey);
+                        const sensorLabel = (provider === 'gps') ? 'GPS_Location' :
+                                            (provider === 'network') ? 'Network_Location' : 'Passive_Location';
+                        list.push({
+                            package: pkgName,
+                            uid: uid || 'unknown',
+                            state: 'FOREGROUND',
+                            sensor: sensorLabel,
+                            rate: 1,
+                            screenOff: false,
+                            foregroundService: true,
+                            proximityEngaged: false
+                        });
+                    }
+                }
+            });
+
+            // Also emit any 'Currently active' stats entries not already captured
+            activeFromStats.forEach(key => {
+                if (!emitted.has(key)) {
+                    emitted.add(key);
+                    const [pkg, provider] = key.split(':');
+                    const sensorLabel = (provider === 'gps') ? 'GPS_Location' :
+                                        (provider === 'network') ? 'Network_Location' : 'Passive_Location';
                     list.push({
-                        package: pkgName,
-                        uid: uid || "unknown",
-                        state: "FOREGROUND",
-                        sensor: trimmed.toLowerCase().includes('gps') ? 'GPS_Location' : 'Network_Location',
+                        package: pkg,
+                        uid: 'unknown',
+                        state: 'FOREGROUND',
+                        sensor: sensorLabel,
                         rate: 1,
                         screenOff: false,
                         foregroundService: true,
@@ -326,6 +464,7 @@ const commands = {
                     });
                 }
             });
+
             return list;
         }
     },

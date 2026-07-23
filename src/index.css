@@ -28,3 +28,24 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(0, 242, 254, 0.3);
 }
+
+@keyframes scanbeam {
+  0% { top: 0%; opacity: 0; }
+  20% { opacity: 1; }
+  80% { opacity: 1; }
+  100% { top: 100%; opacity: 0; }
+}
+
+@keyframes biometricPulse {
+  0%, 100% { box-shadow: 0 0 10px rgba(6, 182, 212, 0.2); }
+  50% { box-shadow: 0 0 22px rgba(6, 182, 212, 0.6); }
+}
+
+.animate-scanbeam {
+  animation: scanbeam 2.2s ease-in-out infinite;
+}
+
+.animate-biometric-pulse {
+  animation: biometricPulse 3s ease-in-out infinite;
+}
+

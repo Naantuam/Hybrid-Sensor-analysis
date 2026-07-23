@@ -21,6 +21,11 @@ export default defineConfig({
       '/bootstrap': {
         target: 'http://localhost:4444',
         changeOrigin: true
+      },
+      '/ws': {
+        target: 'ws://localhost:4444',
+        ws: true,
+        changeOrigin: true
       }
     }
   }

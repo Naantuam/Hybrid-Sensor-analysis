@@ -300,6 +300,7 @@ async function processTelemetryPacket(packet, ws, clientIp) {
             const evaluation = evaluatePacket(rulesInputPacket);
 
             // If threat is SUSPICIOUS or CRITICAL, record and broadcast alert
+            // If BENIGN (OS Infra exempt), still record to DB for forensic record but don't broadcast alert
             if (evaluation.threatLevel !== "BENIGN") {
                 const cooldownKey = `${app_package}:${sensor_name}`;
                 const lastAlerted = alertCooldownMap.get(cooldownKey) || 0;
@@ -329,6 +330,7 @@ async function processTelemetryPacket(packet, ws, clientIp) {
                     },
                     timestamp
                 );
+
 
                 // Package the threat event
                 const alertPayload = {
@@ -364,6 +366,31 @@ async function processTelemetryPacket(packet, ws, clientIp) {
                     }
                 });
                 } // end cooldown else
+            } else {
+                // BENIGN: save to DB for forensic record (quiet, no broadcast, 30s cooldown)
+                const benignCooldownKey = `BENIGN:${app_package}:${sensor_name}`;
+                const lastBenign = alertCooldownMap.get(benignCooldownKey) || 0;
+                const nowBenign = Date.now();
+                if (nowBenign - lastBenign > 30000) {
+                    alertCooldownMap.set(benignCooldownKey, nowBenign);
+                    await saveThreatAlert(
+                        sessionInfo.sessionId,
+                        'BENIGN',
+                        evaluation.totalScore,
+                        evaluation.triggeredRules,
+                        evaluation.modifiersApplied,
+                        app_package,
+                        {
+                            sensor_name,
+                            app_state,
+                            screen_state: rulesInputPacket.metadata.screen_state,
+                            polling_rate_hz: rulesInputPacket.payload.motion_freq || rulesInputPacket.payload.light_freq || 0,
+                            has_foreground_service: rulesInputPacket.metadata.has_foreground_service,
+                            accessibility_warnings: rulesInputPacket.metadata.accessibility_warnings
+                        },
+                        timestamp
+                    );
+                }
             }
         } catch (e) {
             console.error(`[!] Error processing incoming telemetry packet: ${e.message}`);

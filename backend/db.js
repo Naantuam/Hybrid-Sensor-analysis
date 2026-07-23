@@ -499,38 +499,84 @@ async function getSensorEvents(sessionId) {
 }
 
 /**
- * Retrieves stats across all sessions (entire system)
+ * Retrieves stats across all sessions (entire system).
+ * total_packets = evaluated sensor telemetry events (sensor_name IS NOT NULL and not blank)
+ * Severity counts come directly from threat_alerts.
+ * benign_count is derived as (total evaluated packets) - (critical + high + suspicious)
+ * so existing historical data shows correct BENIGN count even before the BENIGN save path.
  */
 async function getSystemStats() {
     if (connectionString && isCloud) {
         const statsQuery = `
             SELECT 
-                (SELECT COALESCE(MAX(score), 0) FROM threat_alerts) as max_score,
-                (SELECT COUNT(*) FROM threat_alerts) as total_threats,
-                (SELECT COUNT(*) FROM sensor_events) as total_events,
-                (SELECT COUNT(*) FROM sessions) as total_devices;
+                COALESCE(MAX(score), 0)                                               AS max_score,
+                COUNT(*)                                                               AS total_alerts,
+                COUNT(*) FILTER (WHERE threat_level = 'CRITICAL')                     AS critical_count,
+                COUNT(*) FILTER (WHERE threat_level = 'HIGH')                         AS high_count,
+                COUNT(*) FILTER (WHERE threat_level = 'SUSPICIOUS')                   AS suspicious_count,
+                COUNT(*) FILTER (WHERE threat_level = 'BENIGN')                       AS benign_count
+            FROM threat_alerts;
         `;
-        const statsRes = await pgPool.query(statsQuery);
+        const devQuery = `SELECT COUNT(*) AS total_devices FROM sessions;`;
+        const pktQuery = `
+            SELECT COUNT(*) AS total_packets
+            FROM sensor_events
+            WHERE sensor_name IS NOT NULL AND sensor_name <> '' AND sensor_name <> 'unknown';
+        `;
+        const [statsRes, devRes, pktRes] = await Promise.all([
+            pgPool.query(statsQuery),
+            pgPool.query(devQuery),
+            pgPool.query(pktQuery)
+        ]);
+        const r = statsRes.rows[0];
+        const critCount    = parseInt(r.critical_count)   || 0;
+        const highCount    = parseInt(r.high_count)        || 0;
+        const suspCount    = parseInt(r.suspicious_count)  || 0;
+        const benignStored = parseInt(r.benign_count)      || 0;
+        const totalPackets = parseInt(pktRes.rows[0].total_packets) || 0;
+        // Infer BENIGN as remaining evaluated packets not yet stored as BENIGN rows
+        const benignCount  = Math.max(benignStored, totalPackets - critCount - highCount - suspCount);
         return {
-            max_score: parseInt(statsRes.rows[0].max_score),
-            total_threats: parseInt(statsRes.rows[0].total_threats),
-            total_events: parseInt(statsRes.rows[0].total_events),
-            total_devices: parseInt(statsRes.rows[0].total_devices)
+            max_score:      parseInt(r.max_score),
+            total_packets:  totalPackets,
+            critical_count: critCount,
+            high_count:     highCount,
+            suspicious_count: suspCount,
+            benign_count:   benignCount,
+            total_devices:  parseInt(devRes.rows[0].total_devices)
         };
     } else {
-        const maxScoreObj = localDb.prepare("SELECT COALESCE(MAX(score), 0) as max_score FROM threat_alerts").get();
-        const totalThreatsObj = localDb.prepare("SELECT COUNT(*) as total_threats FROM threat_alerts").get();
-        const totalEventsObj = localDb.prepare("SELECT COUNT(*) as total_events FROM sensor_events").get();
-        const totalDevicesObj = localDb.prepare("SELECT COUNT(*) as total_devices FROM sessions").get();
-        
+        const maxScoreObj    = localDb.prepare("SELECT COALESCE(MAX(score), 0) as max_score FROM threat_alerts").get();
+        const critObj        = localDb.prepare("SELECT COUNT(*) as c FROM threat_alerts WHERE threat_level = 'CRITICAL'").get();
+        const highObj        = localDb.prepare("SELECT COUNT(*) as c FROM threat_alerts WHERE threat_level = 'HIGH'").get();
+        const suspObj        = localDb.prepare("SELECT COUNT(*) as c FROM threat_alerts WHERE threat_level = 'SUSPICIOUS'").get();
+        const benignStoredObj= localDb.prepare("SELECT COUNT(*) as c FROM threat_alerts WHERE threat_level = 'BENIGN'").get();
+        const totalDevicesObj= localDb.prepare("SELECT COUNT(*) as total_devices FROM sessions").get();
+        // Count real sensor packets — exclude heartbeat / null / unknown sensor_name entries
+        const pktObj         = localDb.prepare(
+            "SELECT COUNT(*) as c FROM sensor_events WHERE sensor_name IS NOT NULL AND sensor_name != '' AND sensor_name != 'unknown'"
+        ).get();
+
+        const critCount     = critObj        ? critObj.c         : 0;
+        const highCount     = highObj        ? highObj.c         : 0;
+        const suspCount     = suspObj        ? suspObj.c         : 0;
+        const benignStored  = benignStoredObj? benignStoredObj.c : 0;
+        const totalPackets  = pktObj         ? pktObj.c          : 0;
+        // Infer BENIGN = remaining packets not classified as threat
+        const benignCount   = Math.max(benignStored, totalPackets - critCount - highCount - suspCount);
+
         return {
-            max_score: maxScoreObj ? maxScoreObj.max_score : 0,
-            total_threats: totalThreatsObj ? totalThreatsObj.total_threats : 0,
-            total_events: totalEventsObj ? totalEventsObj.total_events : 0,
-            total_devices: totalDevicesObj ? totalDevicesObj.total_devices : 0
+            max_score:        maxScoreObj    ? maxScoreObj.max_score   : 0,
+            total_packets:    totalPackets,
+            critical_count:   critCount,
+            high_count:       highCount,
+            suspicious_count: suspCount,
+            benign_count:     benignCount,
+            total_devices:    totalDevicesObj? totalDevicesObj.total_devices : 0
         };
     }
 }
+
 
 /**
  * Retrieves all threat alerts across the system, joined with device info

@@ -74,15 +74,37 @@ function autoDetectAdbSerial(callback) {
 
 // Initialize Device ID and build attributes dynamically (handles PC adb & local Termux)
 function detectDeviceDetails(callback) {
-    const adbPrefix = serial ? `adb -s ${serial} ` : 'adb ';
-    exec(`${adbPrefix}shell getprop ro.product.model`, (errModel, stdoutModel) => {
-        isAdbBridge = !errModel && stdoutModel.trim() !== "";
-        const propCmd = isAdbBridge ? `${adbPrefix}shell getprop` : 'getprop';
+    // Force ADB bridge mode on host PC (non-Android platforms)
+    const isHostMachine = process.platform !== 'android';
+    isAdbBridge = isHostMachine || !!serial;
 
-        exec(`${propCmd} ro.product.model`, (err, stdout) => {
-            if (!err && stdout.trim()) {
-                deviceId = stdout.trim().replace(/\s+/g, '_');
+    const resolveSerialAndProceed = () => {
+        if (!serial && isHostMachine) {
+            exec('adb devices -l', (err, stdout) => {
+                if (!err && stdout) {
+                    const lines = stdout.split('\n');
+                    for (let line of lines) {
+                        const parts = line.trim().split(/\s+/);
+                        if (parts.length >= 2 && parts[1] === 'device') {
+                            serial = parts[0];
+                            break;
+                        }
+                    }
+                }
+                runPropQueries();
+            });
+        } else {
+            runPropQueries();
+        }
+    };
+
+    const runPropQueries = () => {
+        const adbPrefix = (isAdbBridge && serial) ? `adb -s ${serial} ` : (isAdbBridge ? 'adb ' : '');
+        exec(`${adbPrefix}shell getprop ro.product.model`, (errModel, stdoutModel) => {
+            if (!errModel && stdoutModel.trim()) {
+                deviceId = stdoutModel.trim().replace(/\s+/g, '_');
             }
+            const propCmd = isAdbBridge ? `${adbPrefix}shell getprop` : 'getprop';
             exec(`${propCmd} ro.build.version.sdk`, (errSdk, stdoutSdk) => {
                 if (!errSdk && stdoutSdk.trim()) {
                     apiLevel = parseInt(stdoutSdk.trim()) || 29;
@@ -91,12 +113,14 @@ function detectDeviceDetails(callback) {
                     if (!errRel && stdoutRel.trim()) {
                         osVersion = stdoutRel.trim();
                     }
-                    console.log(`[+] Detected OS: Android ${osVersion} (API Level ${apiLevel}) [Bridge: ${isAdbBridge ? 'USB adb' : 'Local termux'}]`);
+                    console.log(`[+] Detected OS: Android ${osVersion} (API Level ${apiLevel}) [Bridge: ${isAdbBridge ? (serial ? 'ADB Serial ' + serial : 'USB adb') : 'Local termux'}]`);
                     callback();
                 });
             });
         });
-    });
+    };
+
+    resolveSerialAndProceed();
 }
 
 autoDetectAdbSerial(() => {
@@ -283,10 +307,10 @@ function execPromise(command) {
 }
 
 /**
- * Runs a command on the device (prefixes with adb shell if in ADB bridge mode)
+ * Runs a command on the device (prefixes with adb -s <serial> shell if in ADB bridge mode)
  */
 function runDeviceCmd(command) {
-    const adbPrefix = serial ? `adb -s ${serial} ` : 'adb ';
+    const adbPrefix = (isAdbBridge && serial) ? `adb -s ${serial} ` : (isAdbBridge ? 'adb ' : '');
     const prefix = isAdbBridge ? `${adbPrefix}shell ` : '';
     return execPromise(prefix + command);
 }
