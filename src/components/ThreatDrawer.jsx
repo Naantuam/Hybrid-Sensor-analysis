@@ -97,27 +97,22 @@ const ACADEMIC_DESCRIPTIONS = {
 // GMS 5-property exemption explanations shown on BENIGN OS infra packets
 const OS_INFRA_EXEMPTIONS = [
   {
-    icon: "🔐",
     title: "Platform Certificate",
     desc: "Signed with Google/OEM platform signing key. Cannot be sideloaded or installed by a third party."
   },
   {
-    icon: "📡",
     title: "Location Broker Role",
     desc: "Does not collect sensor data for itself. Acts as a system API broker, serving location data to requesting apps on behalf of the Android OS."
   },
   {
-    icon: "🛡️",
     title: "Play Protect Verification",
     desc: "Continuously scanned by Google Play Protect against known threat databases. Verified as safe at runtime."
   },
   {
-    icon: "🔍",
     title: "Android App-Op Tracking",
     desc: "Android's app-ops framework tracks sensor consumption by the requesting application's UID, not the broker. Accountability is maintained at the source."
   },
   {
-    icon: "🚫",
     title: "No Exfiltration Path",
     desc: "No local data staging buffer or exfiltration channel is present. No evidence of data being transmitted outside the device's secure OS boundary."
   }
@@ -350,7 +345,6 @@ export default function ThreatDrawer({ drawerOpen, setDrawerOpen, selectedThreat
                   <div className="space-y-2">
                     {OS_INFRA_EXEMPTIONS.map((prop, idx) => (
                       <div key={idx} className="bg-emerald-500/[0.04] border border-emerald-500/15 rounded-xl px-4 py-3 flex items-start gap-3 text-xs">
-                        <span className="text-base flex-shrink-0">{prop.icon}</span>
                         <div>
                           <span className="text-emerald-400 font-bold block">{idx + 1}. {prop.title}</span>
                           <span className="text-gray-400 font-sans mt-0.5 block leading-relaxed">{prop.desc}</span>

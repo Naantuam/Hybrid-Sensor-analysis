@@ -124,13 +124,29 @@ const commands = {
         }
     },
     audio: {
-        shellCommand: "dumpsys media.audio_policy && dumpsys audio",
-        description: "Audits active microphone recording configurations to detect microphone usage",
+        shellCommand: "dumpsys appops && dumpsys media.audio_policy && dumpsys audio",
+        description: "Audits active microphone recording configurations and AppOps Started ops to detect microphone usage",
         parse: (stdout, uidToPackageMap) => {
             const list = [];
             if (!stdout) return list;
             const lines = stdout.split('\n');
             const activePackages = new Map(); // pkgName -> uid
+
+            // 0. Parse AppOps Started ops section for active op=RECORD_AUDIO
+            lines.forEach(line => {
+                const trimmed = line.trim();
+                if (trimmed.includes('op=RECORD_AUDIO')) {
+                    const appOpsMatch = trimmed.match(/pkg=([\w\.]+)\s+op=RECORD_AUDIO/i) ||
+                                        trimmed.match(/op=RECORD_AUDIO.*pkg=([\w\.]+)/i);
+                    if (appOpsMatch) {
+                        const pkgName = appOpsMatch[1];
+                        if (pkgName && pkgName !== 'android' && pkgName !== 'system') {
+                            const uidMatch = trimmed.match(/uid=(\d+)/i) || trimmed.match(/uid:?\s*(\d+)/i);
+                            activePackages.set(pkgName, uidMatch ? uidMatch[1] : "1000");
+                        }
+                    }
+                }
+            });
 
             // riidMap tracks open recording sessions (rec start -> add, rec stop -> remove)
             const riidMap = new Map();

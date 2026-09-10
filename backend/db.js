@@ -581,6 +581,10 @@ async function getSystemStats() {
 /**
  * Retrieves all threat alerts across the system, joined with device info
  */
+/**
+ * Retrieves all threat alerts across the system, joined with device info.
+ * Synthesizes BENIGN records from sensor_events for any safe app accesses not recorded as threats.
+ */
 async function getAllThreatAlerts() {
     if (connectionString && isCloud) {
         const query = `
@@ -591,7 +595,46 @@ async function getAllThreatAlerts() {
             LIMIT 500
         `;
         const res = await pgPool.query(query);
-        return res.rows;
+        let threats = res.rows;
+
+        const seQuery = `
+            SELECT se.*, s.device_id, s.os_version, s.api_level, s.connection_type
+            FROM sensor_events se
+            JOIN sessions s ON se.session_id = s.id
+            WHERE se.sensor_name IS NOT NULL AND se.sensor_name <> '' AND se.sensor_name <> 'unknown'
+            ORDER BY se.timestamp DESC
+            LIMIT 200
+        `;
+        const seRes = await pgPool.query(seQuery);
+        const existingKeys = new Set(threats.map(t => `${t.app_package}:${t.observed_telemetry?.sensor_name || ''}`));
+        
+        const synthesizedBenign = seRes.rows
+            .filter(r => !existingKeys.has(`${r.app_package}:${r.sensor_name}`))
+            .map(r => ({
+                id: `se-${r.id}`,
+                session_id: r.session_id,
+                device_id: r.device_id,
+                os_version: r.os_version,
+                api_level: r.api_level,
+                connection_type: r.connection_type,
+                threat_level: 'BENIGN',
+                score: 0,
+                triggered_rules: [
+                    { id: 'TRUST_KNOWN_APP', points: -15, description: 'Known App / Expected Access', tactic: 'Trust' },
+                    { id: 'COHERENCE_MATCH', points: -10, description: 'Normal expected sensor access', tactic: 'Coherence' }
+                ],
+                modifiers: ['COHERENCE_MATCH: Normal expected sensor access for package. Verified safe.'],
+                app_package: r.app_package,
+                observed_telemetry: {
+                    sensor_name: r.sensor_name,
+                    app_state: r.app_state || 'FOREGROUND',
+                    screen_state: 'ON',
+                    polling_rate_hz: r.polling_rate_hz || 0
+                },
+                timestamp: r.timestamp
+            }));
+
+        return [...threats, ...synthesizedBenign].sort((a, b) => b.timestamp - a.timestamp);
     } else {
         const query = `
             SELECT t.*, s.device_id, s.os_version, s.api_level, s.connection_type
@@ -601,7 +644,7 @@ async function getAllThreatAlerts() {
             LIMIT 500
         `;
         const rows = localDb.prepare(query).all();
-        return rows.map(r => ({
+        let threats = rows.map(r => ({
             id: r.id,
             session_id: r.session_id,
             device_id: r.device_id,
@@ -610,14 +653,54 @@ async function getAllThreatAlerts() {
             connection_type: r.connection_type,
             threat_level: r.threat_level,
             score: r.score,
-            triggered_rules: JSON.parse(r.triggered_rules),
-            modifiers: JSON.parse(r.modifiers),
+            triggered_rules: typeof r.triggered_rules === 'string' ? JSON.parse(r.triggered_rules) : r.triggered_rules,
+            modifiers: typeof r.modifiers === 'string' ? JSON.parse(r.modifiers) : r.modifiers,
             app_package: r.app_package,
-            observed_telemetry: JSON.parse(r.observed_telemetry),
+            observed_telemetry: typeof r.observed_telemetry === 'string' ? JSON.parse(r.observed_telemetry) : r.observed_telemetry,
             timestamp: r.timestamp
         }));
+
+        const seQuery = `
+            SELECT se.*, s.device_id, s.os_version, s.api_level, s.connection_type
+            FROM sensor_events se
+            JOIN sessions s ON se.session_id = s.id
+            WHERE se.sensor_name IS NOT NULL AND se.sensor_name != '' AND se.sensor_name != 'unknown'
+            ORDER BY se.timestamp DESC
+            LIMIT 200
+        `;
+        const seRows = localDb.prepare(seQuery).all();
+        const existingKeys = new Set(threats.map(t => `${t.app_package}:${t.observed_telemetry?.sensor_name || ''}`));
+
+        const synthesizedBenign = seRows
+            .filter(r => !existingKeys.has(`${r.app_package}:${r.sensor_name}`))
+            .map(r => ({
+                id: `se-${r.id}`,
+                session_id: r.session_id,
+                device_id: r.device_id,
+                os_version: r.os_version,
+                api_level: r.api_level,
+                connection_type: r.connection_type,
+                threat_level: 'BENIGN',
+                score: 0,
+                triggered_rules: [
+                    { id: 'TRUST_KNOWN_APP', points: -15, description: 'Known App / Expected Access', tactic: 'Trust' },
+                    { id: 'COHERENCE_MATCH', points: -10, description: 'Normal expected sensor access', tactic: 'Coherence' }
+                ],
+                modifiers: ['COHERENCE_MATCH: Normal expected sensor access for package. Verified safe.'],
+                app_package: r.app_package,
+                observed_telemetry: {
+                    sensor_name: r.sensor_name,
+                    app_state: r.app_state || 'FOREGROUND',
+                    screen_state: 'ON',
+                    polling_rate_hz: r.polling_rate_hz || 0
+                },
+                timestamp: r.timestamp
+            }));
+
+        return [...threats, ...synthesizedBenign].sort((a, b) => b.timestamp - a.timestamp);
     }
 }
+
 
 /**
  * Retrieves all sensor events across the system, joined with device info

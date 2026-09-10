@@ -310,9 +310,12 @@ function execPromise(command) {
  * Runs a command on the device (prefixes with adb -s <serial> shell if in ADB bridge mode)
  */
 function runDeviceCmd(command) {
-    const adbPrefix = (isAdbBridge && serial) ? `adb -s ${serial} ` : (isAdbBridge ? 'adb ' : '');
-    const prefix = isAdbBridge ? `${adbPrefix}shell ` : '';
-    return execPromise(prefix + command);
+    if (isAdbBridge) {
+        const adbPrefix = serial ? `adb -s ${serial} ` : 'adb ';
+        return execPromise(`${adbPrefix}shell "${command.replace(/"/g, '\\"')}"`);
+    } else {
+        return execPromise(command);
+    }
 }
 
 const uidToPackageMap = new Map();
