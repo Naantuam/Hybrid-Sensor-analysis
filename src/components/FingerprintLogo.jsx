@@ -1,7 +1,7 @@
 import React from 'react';
 import { Fingerprint } from 'lucide-react';
 
-export default function FingerprintLogo({ 
+function FingerprintLogo({ 
   onClick, 
   isCollapsed = false,
   showLabel = true,
@@ -51,3 +51,5 @@ export default function FingerprintLogo({
     </button>
   );
 }
+
+export default React.memo(FingerprintLogo);

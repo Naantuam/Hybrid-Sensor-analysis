@@ -1,7 +1,7 @@
 import React from 'react';
 import { Battery } from 'lucide-react';
 
-export default function KPIStats({ kpis, selectedSession }) {
+function KPIStats({ kpis, selectedSession }) {
   return (
     <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
       <div className="bg-[#10111a]/60 border border-white/5 rounded-2xl p-6 relative overflow-hidden backdrop-blur-md">
@@ -37,3 +37,5 @@ export default function KPIStats({ kpis, selectedSession }) {
     </div>
   );
 }
+
+export default React.memo(KPIStats);

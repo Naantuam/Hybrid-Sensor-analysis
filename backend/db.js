@@ -39,11 +39,54 @@ if (connectionString) {
 const sqlitePath = path.join(__dirname, 'sensor_local.db');
 const localDb = new DatabaseSync(sqlitePath);
 
+// In-Memory Database Query Cache with Smart Write-Invalidation
+const queryCache = new Map();
+const CACHE_TTL_MS = 60000; // 60s fallback TTL
+
+function getCached(key) {
+    const entry = queryCache.get(key);
+    if (!entry) return null;
+    if (Date.now() > entry.expiry) {
+        queryCache.delete(key);
+        return null;
+    }
+    return entry.data;
+}
+
+function setCached(key, data, ttlMs = CACHE_TTL_MS) {
+    if (data === undefined || data === null) return data;
+    queryCache.set(key, {
+        data,
+        expiry: Date.now() + ttlMs
+    });
+    return data;
+}
+
+function invalidateCache(prefix = null) {
+    if (!prefix) {
+        queryCache.clear();
+        return;
+    }
+    for (const key of queryCache.keys()) {
+        if (typeof prefix === 'string' && (key.startsWith(prefix) || key.includes(prefix))) {
+            queryCache.delete(key);
+        } else if (prefix instanceof RegExp && prefix.test(key)) {
+            queryCache.delete(key);
+        }
+    }
+}
+
 /**
  * Initializes database schemas
  */
 async function initDatabase() {
-    // 1. Initialize local SQLite tables
+    // 1. Initialize local SQLite tables & PRAGMAs for fast zero-latency access
+    try {
+        localDb.exec("PRAGMA journal_mode = WAL;");
+        localDb.exec("PRAGMA synchronous = NORMAL;");
+        localDb.exec("PRAGMA cache_size = -64000;");
+    } catch (e) {}
+
     localDb.exec(`
         CREATE TABLE IF NOT EXISTS sessions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -71,6 +114,8 @@ async function initDatabase() {
             timestamp INTEGER,
             synced INTEGER DEFAULT 0
         );
+        CREATE INDEX IF NOT EXISTS idx_sensor_events_session ON sensor_events(session_id);
+        CREATE INDEX IF NOT EXISTS idx_sensor_events_timestamp ON sensor_events(timestamp DESC);
     `);
 
     localDb.exec(`
@@ -86,6 +131,9 @@ async function initDatabase() {
             timestamp INTEGER,
             synced INTEGER DEFAULT 0
         );
+        CREATE INDEX IF NOT EXISTS idx_threat_alerts_session ON threat_alerts(session_id);
+        CREATE INDEX IF NOT EXISTS idx_threat_alerts_timestamp ON threat_alerts(timestamp DESC);
+        CREATE INDEX IF NOT EXISTS idx_threat_alerts_level ON threat_alerts(threat_level);
     `);
 
     // 2. Initialize remote PG tables (if config string is available)
@@ -174,6 +222,11 @@ async function saveSession(device_id, ip_address, connection_type, ssid, battery
         sessionId = result.lastInsertRowid;
     }
 
+    // Invalidate sessions and stats cache
+    invalidateCache('sessions');
+    invalidateCache('stats');
+    invalidateCache('session:' + sessionId);
+
     // 2. Try to sync immediately to PostgreSQL
     if (connectionString) {
         try {
@@ -200,6 +253,11 @@ async function updateSessionBatterySaver(sessionId, batterySaverActive) {
     // 1. Update SQLite
     const stmtUpdate = localDb.prepare("UPDATE sessions SET battery_saver_active = ?, synced = 0 WHERE id = ?");
     stmtUpdate.run(batterySaver, sessionId);
+
+    // Invalidate sessions cache
+    invalidateCache('sessions');
+    invalidateCache('session:' + sessionId);
+    invalidateCache('stats');
 
     // 2. Try immediate Postgres update
     if (connectionString) {
@@ -231,6 +289,12 @@ async function saveSensorEvent(sessionId, app_package, app_uid, app_state, senso
     const result = stmtInsert.run(sessionId, app_package, app_uid, app_state, sensor_name, polling_rate_hz, Number(timestamp));
     const localEventId = result.lastInsertRowid;
 
+    // Invalidate events, stats, and threats cache
+    invalidateCache('events');
+    invalidateCache('stats');
+    invalidateCache('threats');
+    invalidateCache('session:' + sessionId);
+
     // 2. Try immediate PostgreSQL sync
     if (connectionString) {
         const stmtGet = localDb.prepare("SELECT device_id FROM sessions WHERE id = ?");
@@ -242,7 +306,7 @@ async function saveSensorEvent(sessionId, app_package, app_uid, app_state, senso
                     await pgPool.query(`
                         INSERT INTO sensor_events (session_id, app_package, app_uid, app_state, sensor_name, polling_rate_hz, timestamp)
                         VALUES ($1, $2, $3, $4, $5, $6, $7)
-                    `, [pgSessionId, app_package, app_uid, app_state, sensor_name, polling_rate_hz, timestamp]);
+                    `, [pgSessionId, event_pkg => app_package, app_uid, app_state, sensor_name, polling_rate_hz, timestamp]);
                     
                     const stmtMark = localDb.prepare("UPDATE sensor_events SET synced = 1 WHERE id = ?");
                     stmtMark.run(localEventId);
@@ -269,6 +333,11 @@ async function saveThreatAlert(sessionId, threat_level, score, triggered_rules, 
     `);
     const result = stmtInsert.run(sessionId, threat_level, score, rulesStr, modifiersStr, app_package, telemetryStr, Number(timestamp));
     const localAlertId = result.lastInsertRowid;
+
+    // Invalidate threat alerts, stats, and session caches
+    invalidateCache('threats');
+    invalidateCache('stats');
+    invalidateCache('session:' + sessionId);
 
     // 2. Try immediate PostgreSQL sync
     if (connectionString) {
@@ -407,12 +476,16 @@ async function synchronizeOfflineData() {
  * Retrieves all sessions
  */
 async function getSessions() {
+    const cached = getCached('sessions:all');
+    if (cached) return cached;
+
+    let result;
     if (connectionString && isCloud) {
         const res = await pgPool.query("SELECT * FROM sessions ORDER BY connected_at DESC LIMIT 100");
-        return res.rows;
+        result = res.rows;
     } else {
         const rows = localDb.prepare("SELECT * FROM sessions ORDER BY connected_at DESC LIMIT 100").all();
-        return rows.map(r => ({
+        result = rows.map(r => ({
             id: r.id,
             device_id: r.device_id,
             ip_address: r.ip_address,
@@ -424,12 +497,18 @@ async function getSessions() {
             connected_at: r.connected_at
         }));
     }
+    return setCached('sessions:all', result);
 }
 
 /**
  * Retrieves stats for a session
  */
 async function getSessionStats(sessionId) {
+    const cacheKey = `session:${sessionId}:stats`;
+    const cached = getCached(cacheKey);
+    if (cached) return cached;
+
+    let result;
     if (connectionString && isCloud) {
         const statsQuery = `
             SELECT 
@@ -441,7 +520,7 @@ async function getSessionStats(sessionId) {
         const appsQuery = `SELECT DISTINCT app_package FROM sensor_events WHERE session_id = $1`;
         const appsRes = await pgPool.query(appsQuery, [sessionId]);
         
-        return {
+        result = {
             max_score: parseInt(statsRes.rows[0].max_score),
             total_threats: parseInt(statsRes.rows[0].total_threats),
             total_events: parseInt(statsRes.rows[0].total_events),
@@ -454,25 +533,31 @@ async function getSessionStats(sessionId) {
         
         const activeApps = localDb.prepare("SELECT DISTINCT app_package FROM sensor_events WHERE session_id = ?").all(sessionId);
         
-        return {
+        result = {
             max_score: maxScoreObj ? maxScoreObj.max_score : 0,
             total_threats: totalThreatsObj ? totalThreatsObj.total_threats : 0,
             total_events: totalEventsObj ? totalEventsObj.total_events : 0,
             active_apps: activeApps.map(a => a.app_package)
         };
     }
+    return setCached(cacheKey, result);
 }
 
 /**
  * Retrieves alerts for a session
  */
 async function getThreatAlerts(sessionId) {
+    const cacheKey = `session:${sessionId}:threats`;
+    const cached = getCached(cacheKey);
+    if (cached) return cached;
+
+    let result;
     if (connectionString && isCloud) {
         const res = await pgPool.query("SELECT * FROM threat_alerts WHERE session_id = $1 ORDER BY timestamp DESC", [sessionId]);
-        return res.rows;
+        result = res.rows;
     } else {
         const rows = localDb.prepare("SELECT * FROM threat_alerts WHERE session_id = ? ORDER BY timestamp DESC").all(sessionId);
-        return rows.map(r => ({
+        result = rows.map(r => ({
             id: r.id,
             session_id: r.session_id,
             threat_level: r.threat_level,
@@ -484,18 +569,25 @@ async function getThreatAlerts(sessionId) {
             timestamp: r.timestamp
         }));
     }
+    return setCached(cacheKey, result);
 }
 
 /**
  * Retrieves sensor events for a session
  */
 async function getSensorEvents(sessionId) {
+    const cacheKey = `session:${sessionId}:events`;
+    const cached = getCached(cacheKey);
+    if (cached) return cached;
+
+    let result;
     if (connectionString && isCloud) {
         const res = await pgPool.query("SELECT * FROM sensor_events WHERE session_id = $1 ORDER BY timestamp DESC LIMIT 200", [sessionId]);
-        return res.rows;
+        result = res.rows;
     } else {
-        return localDb.prepare("SELECT * FROM sensor_events WHERE session_id = ? ORDER BY timestamp DESC LIMIT 200").all(sessionId);
+        result = localDb.prepare("SELECT * FROM sensor_events WHERE session_id = ? ORDER BY timestamp DESC LIMIT 200").all(sessionId);
     }
+    return setCached(cacheKey, result);
 }
 
 /**
@@ -506,6 +598,10 @@ async function getSensorEvents(sessionId) {
  * so existing historical data shows correct BENIGN count even before the BENIGN save path.
  */
 async function getSystemStats() {
+    const cached = getCached('stats:system');
+    if (cached) return cached;
+
+    let result;
     if (connectionString && isCloud) {
         const statsQuery = `
             SELECT 
@@ -536,7 +632,7 @@ async function getSystemStats() {
         const totalPackets = parseInt(pktRes.rows[0].total_packets) || 0;
         // Infer BENIGN as remaining evaluated packets not yet stored as BENIGN rows
         const benignCount  = Math.max(benignStored, totalPackets - critCount - highCount - suspCount);
-        return {
+        result = {
             max_score:      parseInt(r.max_score),
             total_packets:  totalPackets,
             critical_count: critCount,
@@ -565,7 +661,7 @@ async function getSystemStats() {
         // Infer BENIGN = remaining packets not classified as threat
         const benignCount   = Math.max(benignStored, totalPackets - critCount - highCount - suspCount);
 
-        return {
+        result = {
             max_score:        maxScoreObj    ? maxScoreObj.max_score   : 0,
             total_packets:    totalPackets,
             critical_count:   critCount,
@@ -575,17 +671,18 @@ async function getSystemStats() {
             total_devices:    totalDevicesObj? totalDevicesObj.total_devices : 0
         };
     }
+    return setCached('stats:system', result);
 }
 
-
-/**
- * Retrieves all threat alerts across the system, joined with device info
- */
 /**
  * Retrieves all threat alerts across the system, joined with device info.
  * Synthesizes BENIGN records from sensor_events for any safe app accesses not recorded as threats.
  */
 async function getAllThreatAlerts() {
+    const cached = getCached('threats:all');
+    if (cached) return cached;
+
+    let result;
     if (connectionString && isCloud) {
         const query = `
             SELECT t.*, s.device_id, s.os_version, s.api_level, s.connection_type
@@ -634,7 +731,7 @@ async function getAllThreatAlerts() {
                 timestamp: r.timestamp
             }));
 
-        return [...threats, ...synthesizedBenign].sort((a, b) => b.timestamp - a.timestamp);
+        result = [...threats, ...synthesizedBenign].sort((a, b) => b.timestamp - a.timestamp);
     } else {
         const query = `
             SELECT t.*, s.device_id, s.os_version, s.api_level, s.connection_type
@@ -697,15 +794,19 @@ async function getAllThreatAlerts() {
                 timestamp: r.timestamp
             }));
 
-        return [...threats, ...synthesizedBenign].sort((a, b) => b.timestamp - a.timestamp);
+        result = [...threats, ...synthesizedBenign].sort((a, b) => b.timestamp - a.timestamp);
     }
+    return setCached('threats:all', result);
 }
-
 
 /**
  * Retrieves all sensor events across the system, joined with device info
  */
 async function getAllSensorEvents() {
+    const cached = getCached('events:all');
+    if (cached) return cached;
+
+    let result;
     if (connectionString && isCloud) {
         const query = `
             SELECT se.*, s.device_id
@@ -715,7 +816,7 @@ async function getAllSensorEvents() {
             LIMIT 500
         `;
         const res = await pgPool.query(query);
-        return res.rows;
+        result = res.rows;
     } else {
         const query = `
             SELECT se.*, s.device_id
@@ -724,8 +825,9 @@ async function getAllSensorEvents() {
             ORDER BY se.timestamp DESC
             LIMIT 500
         `;
-        return localDb.prepare(query).all();
+        result = localDb.prepare(query).all();
     }
+    return setCached('events:all', result);
 }
 
 module.exports = {
@@ -741,5 +843,6 @@ module.exports = {
     getSystemStats,
     getAllThreatAlerts,
     getAllSensorEvents,
+    invalidateCache,
     pool: pgPool
 };

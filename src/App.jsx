@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   Shield, 
   Smartphone, 
@@ -16,15 +16,19 @@ import DeviceDashboard from './components/DeviceDashboard';
 import OnboardingModal from './components/OnboardingModal';
 import ThreatDrawer from './components/ThreatDrawer';
 import FingerprintLogo from './components/FingerprintLogo';
+import { getApiCache, setApiCache, invalidateApiCache } from './utils/apiCache';
 
 export default function App() {
-  const [sessions, setSessions] = useState([]);
+  const [sessions, setSessions] = useState(() => getApiCache('/api/sessions') || []);
   const [selectedSession, setSelectedSession] = useState(null);
   const [onlineSessions, setOnlineSessions] = useState(new Set());
   
   // Navigation / Views State
   const [currentView, setCurrentView] = useState('overview'); // 'overview', 'device'
   
+  // Top loading state for smooth non-blocking transitions
+  const [isDataLoading, setIsDataLoading] = useState(false);
+
   // Onboarding Modal state
   const [isOnboardingOpen, setIsOnboardingOpen] = useState(false);
   
@@ -46,73 +50,155 @@ export default function App() {
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
 
-  const toggleSidebar = () => {
+  // Master switch for ADB & Live Telemetry
+  const [isAdbActive, setIsAdbActive] = useState(true);
+
+  const toggleAdbServer = useCallback(async () => {
+    try {
+      const res = await fetch('/api/system/toggle-adb', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ active: !isAdbActive })
+      });
+      const data = await res.json();
+      if (data.status === 'success') {
+        setIsAdbActive(data.adbActive);
+      }
+    } catch (err) {
+      console.error('[!] Error toggling ADB server:', err);
+    }
+  }, [isAdbActive]);
+
+  const toggleSidebar = useCallback(() => {
     if (window.innerWidth < 768) {
       setIsMobileSidebarOpen(prev => !prev);
     } else {
       setIsSidebarCollapsed(prev => !prev);
     }
-  };
+  }, []);
 
   // Keep selectedSessionRef updated with the latest state
   useEffect(() => {
     selectedSessionRef.current = selectedSession;
   }, [selectedSession]);
 
-  // 1. Fetch Sessions List
-  const fetchSessions = async () => {
+  // 1. Fetch Sessions List with Cache-First Strategy
+  const fetchSessions = useCallback(async () => {
+    const cached = getApiCache('/api/sessions');
+    if (cached) {
+      setSessions(cached);
+    }
     try {
       const res = await fetch('/api/sessions');
       if (res.ok) {
         const data = await res.json();
-        setSessions(data);
-        // If there is an active selected session, keep it, otherwise do not force selection
+        setApiCache('/api/sessions', data);
+        setSessions(prev => {
+          if (JSON.stringify(prev) === JSON.stringify(data)) return prev;
+          return data;
+        });
       }
     } catch (err) {
       console.error('[!] Error fetching sessions:', err);
     }
-  };
+  }, []);
 
-  // 2. Fetch Details for Selected Session
-  const selectSession = async (session) => {
+  // 2. Fetch Details for Selected Session with 0ms Instant Cache Restoration
+  const selectSession = useCallback(async (session) => {
     setSelectedSession(session);
     setSelectedThreat(null);
     setDrawerOpen(false);
     setIsMobileSidebarOpen(false); // Close mobile drawer on selection
-    setCurrentView('device');   // Automatically route to the device details page
+    setCurrentView('device');      // Automatically route to the device details page
+
+    // 1. Check client cache immediately (0ms render)
+    const cachedStats = getApiCache(`/api/sessions/${session.id}/stats`);
+    const cachedThreats = getApiCache(`/api/sessions/${session.id}/threats`);
+    const cachedEvents = getApiCache(`/api/sessions/${session.id}/events`);
+
+    if (cachedStats) setKpis(cachedStats);
+    if (cachedThreats) setThreats(cachedThreats);
+    if (cachedEvents) setRawEvents(cachedEvents);
+
+    const hasFullCache = cachedStats && cachedThreats && cachedEvents;
+    if (!hasFullCache) {
+      setIsDataLoading(true);
+    }
+
     try {
       const [statsRes, threatsRes, eventsRes] = await Promise.all([
         fetch(`/api/sessions/${session.id}/stats`),
         fetch(`/api/sessions/${session.id}/threats`),
         fetch(`/api/sessions/${session.id}/events`)
       ]);
-      if (statsRes.ok) setKpis(await statsRes.json());
-      if (threatsRes.ok) setThreats(await threatsRes.json());
-      if (eventsRes.ok) setRawEvents(await eventsRes.json());
+      if (statsRes.ok) {
+        const statsData = await statsRes.json();
+        setApiCache(`/api/sessions/${session.id}/stats`, statsData);
+        setKpis(statsData);
+      }
+      if (threatsRes.ok) {
+        const threatsData = await threatsRes.json();
+        setApiCache(`/api/sessions/${session.id}/threats`, threatsData);
+        setThreats(threatsData);
+      }
+      if (eventsRes.ok) {
+        const eventsData = await eventsRes.json();
+        setApiCache(`/api/sessions/${session.id}/events`, eventsData);
+        setRawEvents(eventsData);
+      }
     } catch (err) {
       console.error('[!] Error loading session details:', err);
+    } finally {
+      setIsDataLoading(false);
     }
-  };
+  }, []);
 
   // 2b. Refresh details silently without resetting UI selection or drawer states
-  const refreshSessionData = async (sessionId) => {
+  const refreshSessionData = useCallback(async (sessionId) => {
     try {
       const [statsRes, threatsRes, eventsRes] = await Promise.all([
         fetch(`/api/sessions/${sessionId}/stats`),
         fetch(`/api/sessions/${sessionId}/threats`),
         fetch(`/api/sessions/${sessionId}/events`)
       ]);
-      if (statsRes.ok) setKpis(await statsRes.json());
-      if (threatsRes.ok) setThreats(await threatsRes.json());
-      if (eventsRes.ok) setRawEvents(await eventsRes.json());
+      if (statsRes.ok) {
+        const statsData = await statsRes.json();
+        setApiCache(`/api/sessions/${sessionId}/stats`, statsData);
+        setKpis(statsData);
+      }
+      if (threatsRes.ok) {
+        const threatsData = await threatsRes.json();
+        setApiCache(`/api/sessions/${sessionId}/threats`, threatsData);
+        setThreats(threatsData);
+      }
+      if (eventsRes.ok) {
+        const eventsData = await eventsRes.json();
+        setApiCache(`/api/sessions/${sessionId}/events`, eventsData);
+        setRawEvents(eventsData);
+      }
     } catch (err) {
       console.error('[!] Error refreshing session details:', err);
     }
-  };
+  }, []);
+
+  const addLiveLog = useCallback((tag, message, type = '') => {
+    const time = new Date().toLocaleTimeString();
+    setLiveLogs(prev => [...prev.slice(-150), { time, tag, message, type }]);
+  }, []);
 
   // 3. Setup WebSocket connection & Auto-detect connected devices on reload
   useEffect(() => {
     fetchSessions();
+
+    // Fetch initial ADB master switch status
+    fetch('/api/system/adb-status')
+      .then(res => res.json())
+      .then(data => {
+        if (data.status === 'success') {
+          setIsAdbActive(data.adbActive);
+        }
+      })
+      .catch(() => {});
     
     // Initial auto-detect of connected ADB devices on page reload
     fetch('/api/usb-detect')
@@ -143,6 +229,14 @@ export default function App() {
             const alert = data.payload;
             const devTag = data.metadata?.device_id || (selectedSessionRef.current ? selectedSessionRef.current.device_id : 'Device');
             addLiveLog(alert.threat_level, `[${devTag}] Security Warning: "${alert.app_package}" triggered Score: ${alert.score}`);
+            
+            // Invalidate cache on live security threat
+            invalidateApiCache('/api/threats');
+            invalidateApiCache('/api/stats');
+            if (alert.session_id) {
+              invalidateApiCache(`/api/sessions/${alert.session_id}`);
+            }
+
             const currentSelected = selectedSessionRef.current;
             if (currentSelected && currentSelected.id === alert.session_id) {
               refreshSessionData(currentSelected.id);
@@ -151,16 +245,42 @@ export default function App() {
             const telemetry = data.payload;
             const devTag = data.metadata?.device_id || (selectedSessionRef.current ? selectedSessionRef.current.device_id : 'Device');
             addLiveLog("INFO", `[${devTag}] Telemetry: "${telemetry.app_package}" accessed ${telemetry.sensor_name} (${telemetry.app_state})`);
+            
+            // Invalidate cache on live sensor telemetry
+            invalidateApiCache('/api/events');
+            invalidateApiCache('/api/stats');
+            if (data.metadata?.session_id) {
+              invalidateApiCache(`/api/sessions/${data.metadata.session_id}`);
+            }
+
             const currentSelected = selectedSessionRef.current;
             if (currentSelected && currentSelected.id === data.metadata.session_id) {
               refreshSessionData(currentSelected.id);
             }
           } else if (data.event_type === "active_sessions_sync") {
-            setOnlineSessions(prev => new Set([...prev, ...(data.sessions || [])]));
-            fetchSessions();
+            const incoming = data.sessions || [];
+            setOnlineSessions(prev => {
+              const prevArr = Array.from(prev);
+              if (prevArr.length === incoming.length && incoming.every(s => prev.has(s))) {
+                return prev;
+              }
+              invalidateApiCache('/api/sessions');
+              fetchSessions();
+              return new Set(incoming);
+            });
           } else if (data.event_type === "active_adb_sync") {
-            setOnlineSessions(prev => new Set([...prev, ...(data.serials || [])]));
-            fetchSessions();
+            const incoming = data.serials || [];
+            setOnlineSessions(prev => {
+              const prevArr = Array.from(prev);
+              if (prevArr.length === incoming.length && incoming.every(s => prev.has(s))) {
+                return prev;
+              }
+              invalidateApiCache('/api/sessions');
+              fetchSessions();
+              return new Set(incoming);
+            });
+          } else if (data.event_type === "adb_status_change" || data.event_type === "adb_status_sync") {
+            setIsAdbActive(prev => prev === data.adbActive ? prev : data.adbActive);
           }
         } catch (e) {
           console.error('[!] Socket message parse error:', e);
@@ -177,29 +297,31 @@ export default function App() {
       if (reconnectTimeout) clearTimeout(reconnectTimeout);
       if (wsBroker.current) wsBroker.current.close();
     };
-  }, []);
+  }, [fetchSessions, refreshSessionData, addLiveLog]);
 
-  const addLiveLog = (tag, message, type = '') => {
-    const time = new Date().toLocaleTimeString();
-    setLiveLogs(prev => [...prev.slice(-150), { time, tag, message, type }]);
-  };
-
-  const getThreatColorClass = (level) => {
+  const getThreatColorClass = useCallback((level) => {
     switch (level) {
       case 'CRITICAL': return 'bg-red-500/10 text-red-500 border-red-500/30';
       case 'HIGH': return 'bg-orange-500/10 text-orange-500 border-orange-500/30';
       case 'SUSPICIOUS': return 'bg-yellow-500/10 text-yellow-500 border-yellow-500/30';
       default: return 'bg-emerald-500/10 text-emerald-500 border-emerald-500/30';
     }
-  };
+  }, []);
 
-  const handleThreatClick = (threat) => {
+  const handleThreatClick = useCallback((threat) => {
     setSelectedThreat(threat);
     setDrawerOpen(true);
-  };
+  }, []);
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[#07080d] text-[#f3f4f6] font-sans antialiased">
+    <div className="flex h-screen w-screen overflow-hidden bg-[#07080d] text-[#f3f4f6] font-sans antialiased relative">
+      {/* Top Subtle Loading Progress Bar for Smooth Visual Transition */}
+      {isDataLoading && (
+        <div className="fixed top-0 left-0 right-0 h-[2px] z-50 overflow-hidden bg-white/5 pointer-events-none">
+          <div className="h-full bg-gradient-to-r from-cyan-500 via-sky-400 to-indigo-500 animate-loading-bar" />
+        </div>
+      )}
+
       {/* Background radial highlights */}
       <div className="absolute top-[-10%] left-[-10%] w-96 h-96 md:w-144 md:h-144 bg-cyan-500/5 rounded-full blur-3xl pointer-events-none z-0" />
       <div className="absolute bottom-[-10%] right-[-10%] w-96 h-96 md:w-144 md:h-144 bg-purple-500/5 rounded-full blur-3xl pointer-events-none z-0" />
@@ -237,10 +359,14 @@ export default function App() {
                 setIsOnboardingOpen(true);
                 setIsMobileSidebarOpen(false);
               }}
-              className="p-2 bg-cyan-500/10 hover:bg-cyan-500/25 text-cyan-400 border border-cyan-500/30 rounded-xl transition-all cursor-pointer hover:shadow-[0_0_12px_rgba(6,182,212,0.4)] hover:scale-105 active:scale-95 group"
-              title="Add Device (Scan & Onboard)"
+              className={`p-2 rounded-xl transition-all cursor-pointer group ${
+                isAdbActive
+                  ? 'bg-cyan-500/10 hover:bg-cyan-500/25 text-cyan-400 border border-cyan-500/30 hover:shadow-[0_0_12px_rgba(6,182,212,0.4)] hover:scale-105 active:scale-95'
+                  : 'bg-slate-800/40 hover:bg-slate-800/80 text-slate-500 border border-slate-700/50 hover:text-slate-300 active:scale-95'
+              }`}
+              title={isAdbActive ? "Add Device (Live Telemetry & Scan Active)" : "Device Manager (Live Telemetry Switched OFF)"}
             >
-              <PlusCircle className="w-4 h-4 transform group-hover:rotate-90 transition-transform duration-300" />
+              <PlusCircle className={`w-4 h-4 transform group-hover:rotate-90 transition-transform duration-300 ${!isAdbActive ? 'text-slate-400' : ''}`} />
             </button>
           )}
         </div>
@@ -255,11 +381,19 @@ export default function App() {
                 setIsOnboardingOpen(true);
                 setIsMobileSidebarOpen(false);
               }}
-              className="p-3 bg-cyan-500/10 hover:bg-cyan-500/25 text-cyan-400 border border-cyan-500/30 rounded-xl transition-all cursor-pointer hover:shadow-[0_0_15px_rgba(6,182,212,0.5)] hover:scale-110 active:scale-95 group relative"
-              title="Add Device (Scan & Onboard)"
+              className={`p-3 rounded-xl transition-all cursor-pointer group relative ${
+                isAdbActive
+                  ? 'bg-cyan-500/10 hover:bg-cyan-500/25 text-cyan-400 border border-cyan-500/30 hover:shadow-[0_0_15px_rgba(6,182,212,0.5)] hover:scale-110 active:scale-95'
+                  : 'bg-slate-800/40 hover:bg-slate-800/80 text-slate-500 border border-slate-700/50 hover:text-slate-300 active:scale-95'
+              }`}
+              title={isAdbActive ? "Add Device (Live Telemetry Active)" : "Device Manager (Live Telemetry Switched OFF)"}
             >
-              <PlusCircle className="w-5 h-5 transform group-hover:rotate-90 transition-transform duration-300" />
-              <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-cyan-400 rounded-full animate-ping" />
+              <PlusCircle className={`w-5 h-5 transform group-hover:rotate-90 transition-transform duration-300 ${!isAdbActive ? 'text-slate-400' : ''}`} />
+              {isAdbActive ? (
+                <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-cyan-400 rounded-full animate-ping" />
+              ) : (
+                <span className="absolute -top-1 -right-1 w-2 h-2 bg-slate-500 rounded-full border border-slate-700" title="Telemetry OFF (Offline Safe Mode)" />
+              )}
             </button>
 
             <div className="w-8 h-px bg-white/10" />
@@ -447,6 +581,8 @@ export default function App() {
         isOpen={isOnboardingOpen}
         onClose={() => setIsOnboardingOpen(false)}
         onRegisterSuccess={fetchSessions}
+        isAdbActive={isAdbActive}
+        onToggleAdb={toggleAdbServer}
       />
     </div>
   );

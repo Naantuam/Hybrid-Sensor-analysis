@@ -11,6 +11,10 @@ export default function DeviceRegister({ toggleSidebar }) {
   const [selectedProfile, setSelectedProfile] = useState('modern'); // 'modern', 'legacy', 'x86_64'
   const [copied, setCopied] = useState(false);
   
+  // Master Switch state
+  const [isAdbActive, setIsAdbActive] = useState(true);
+  const [isTogglingAdb, setIsTogglingAdb] = useState(false);
+
   // Custom Scan / Bridge States
   const [isScanning, setIsScanning] = useState(false);
   const [runningSerials, setRunningSerials] = useState([]);
@@ -20,7 +24,7 @@ export default function DeviceRegister({ toggleSidebar }) {
   const [isProvisioning, setIsProvisioning] = useState(false);
   const [provisionStatus, setProvisionStatus] = useState('');
 
-  // Fetch Server Metadata
+  // Fetch Server Metadata & ADB Status
   useEffect(() => {
     fetch('/api/info')
       .then(res => res.json())
@@ -29,12 +33,46 @@ export default function DeviceRegister({ toggleSidebar }) {
       })
       .catch(err => console.error('[!] Error fetching server info:', err));
 
-    handleScan();
+    fetch('/api/system/adb-status')
+      .then(res => res.json())
+      .then(data => {
+        if (data.status === 'success') {
+          setIsAdbActive(data.adbActive);
+        }
+      })
+      .catch(() => {});
+
+    if (isAdbActive) {
+      handleScan();
+    }
     
-    // Periodically sync running agents
-    const timer = setInterval(fetchRunningAgents, 3000);
-    return () => clearInterval(timer);
-  }, []);
+    // Periodically sync running agents if ADB active
+    let timer = null;
+    if (isAdbActive) {
+      timer = setInterval(fetchRunningAgents, 3000);
+    }
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [isAdbActive]);
+
+  const handleToggleAdb = async () => {
+    setIsTogglingAdb(true);
+    try {
+      const res = await fetch('/api/system/toggle-adb', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ active: !isAdbActive })
+      });
+      const data = await res.json();
+      if (data.status === 'success') {
+        setIsAdbActive(data.adbActive);
+      }
+    } catch (err) {
+      console.error('[!] Error toggling ADB:', err);
+    }
+    setIsTogglingAdb(false);
+  };
 
   const fetchRunningAgents = () => {
     fetch('/api/agent/status')
@@ -238,15 +276,78 @@ export default function DeviceRegister({ toggleSidebar }) {
         
         <button
           onClick={handleScan}
-          disabled={isScanning}
-          className="flex items-center gap-2 px-5 py-2.5 bg-cyan-600 hover:bg-cyan-500 disabled:bg-cyan-800 text-white text-xs font-bold rounded-xl transition-all shadow-lg shadow-cyan-950/20"
+          disabled={isScanning || !isAdbActive}
+          className={`flex items-center gap-2 px-5 py-2.5 text-xs font-bold rounded-xl transition-all shadow-lg ${
+            isAdbActive
+              ? 'bg-cyan-600 hover:bg-cyan-500 disabled:bg-cyan-800 text-white shadow-cyan-950/20 cursor-pointer'
+              : 'bg-slate-800 border border-slate-700 text-slate-500 cursor-not-allowed opacity-60'
+          }`}
         >
           {isScanning ? (
             <Loader2 className="w-4 h-4 animate-spin" />
           ) : (
             <RefreshCw className="w-4 h-4" />
           )}
-          Scan USB Devices
+          {isScanning ? "Scanning USB..." : isAdbActive ? "Scan USB Devices" : "ADB Switched OFF"}
+        </button>
+      </div>
+
+      {/* MASTER SWITCH: ADB SERVER & LIVE TELEMETRY */}
+      <div className={`p-4 md:p-5 rounded-2xl border transition-all duration-300 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 ${
+        isAdbActive
+          ? 'bg-gradient-to-r from-emerald-500/10 via-cyan-500/5 to-transparent border-emerald-500/30 shadow-[0_0_20px_rgba(16,185,129,0.08)]'
+          : 'bg-slate-900/80 border-slate-700/60 shadow-inner'
+      }`}>
+        <div className="flex items-center gap-3.5">
+          <div className={`p-2.5 rounded-xl border transition-colors ${
+            isAdbActive 
+              ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40 shadow-[0_0_12px_rgba(16,185,129,0.3)]' 
+              : 'bg-slate-800 text-slate-500 border-slate-700'
+          }`}>
+            <Radio className={`w-5 h-5 ${isAdbActive ? 'animate-pulse text-emerald-400' : 'text-slate-500'}`} />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-bold font-outfit text-white">
+                {isAdbActive ? "Live Telemetry & ADB Server Active" : "ADB Server & Telemetry Switched OFF"}
+              </h3>
+              <span className={`text-[9px] font-mono font-bold px-2 py-0.5 rounded-full border uppercase tracking-wider ${
+                isAdbActive 
+                  ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' 
+                  : 'bg-slate-800 text-slate-400 border-slate-700'
+              }`}>
+                {isAdbActive ? "LIVE SCAN ON" : "OFFLINE SAFE MODE"}
+              </span>
+            </div>
+            <p className="text-xs text-gray-400 mt-0.5">
+              {isAdbActive 
+                ? "ADB background scanning and host telemetry bridge are actively polling connected devices." 
+                : "ADB daemon is stopped. Background polling is paused so you can browse the frontend with zero freezing or lag."}
+            </p>
+          </div>
+        </div>
+
+        <button
+          onClick={handleToggleAdb}
+          disabled={isTogglingAdb}
+          className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-md active:scale-95 flex-shrink-0 ${
+            isAdbActive
+              ? 'bg-rose-500/15 hover:bg-rose-500/25 text-rose-400 border border-rose-500/30 hover:shadow-[0_0_12px_rgba(244,63,94,0.3)]'
+              : 'bg-emerald-500 hover:bg-emerald-400 text-black border border-emerald-400/50 shadow-[0_0_15px_rgba(16,185,129,0.4)]'
+          }`}
+        >
+          {isTogglingAdb ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          ) : isAdbActive ? (
+            <Square className="w-3.5 h-3.5 fill-current" />
+          ) : (
+            <Play className="w-3.5 h-3.5 fill-current" />
+          )}
+          {isTogglingAdb 
+            ? "Switching..." 
+            : isAdbActive 
+              ? "Switch OFF (Kill ADB Server)" 
+              : "Switch ON (Start Live Telemetry)"}
         </button>
       </div>
 

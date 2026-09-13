@@ -63,6 +63,9 @@ const activeSessions = new Map();
 const IS_CLOUD = process.env.IS_CLOUD === 'true';
 const kaliConnections = new Set();
 
+// Master switch for ADB daemon & live telemetry scanning
+let isAdbScanningActive = true;
+
 // System Accessibility Service package prefixes to ignore during security scans
 const SYSTEM_PREFIXES = ['com.android', 'com.google.android', 'com.sec.android', 'com.samsung', 'org.chromium', 'com.huawei', 'com.lg', 'com.xiaomi', 'com.oppo'];
 
@@ -385,6 +388,12 @@ wss.on('connection', (ws, req) => {
         sessions: sessionIds
     }));
 
+    // Send initial ADB scanning status
+    ws.send(JSON.stringify({
+        event_type: "adb_status_sync",
+        adbActive: isAdbScanningActive
+    }));
+
     ws.on('message', async (message) => {
         try {
             const packet = JSON.parse(message);
@@ -441,15 +450,78 @@ app.get('/api/info', (req, res) => {
 // Run adb commands safely helper
 const runAdbCommand = (command) => {
     return new Promise((resolve) => {
-        exec(command, { maxBuffer: 1024 * 1024 * 10, timeout: 5000 }, (err, stdout) => {
+        if (!isAdbScanningActive && !command.includes('start-server') && !command.includes('kill-server')) {
+            return resolve('');
+        }
+        exec(command, { maxBuffer: 1024 * 1024 * 10, timeout: 1200 }, (err, stdout) => {
             if (err) resolve('');
             else resolve(stdout.trim());
         });
     });
 };
 
+// GET /api/system/adb-status - gets current master switch status
+app.get('/api/system/adb-status', (req, res) => {
+    res.json({
+        status: "success",
+        adbActive: isAdbScanningActive,
+        runningAgentsCount: runningAgents.size
+    });
+});
+
+// POST /api/system/toggle-adb - toggles or sets master switch for ADB scanning and live bridge
+app.post('/api/system/toggle-adb', (req, res) => {
+    const { active } = req.body;
+    const newStatus = typeof active === 'boolean' ? active : !isAdbScanningActive;
+    isAdbScanningActive = newStatus;
+
+    if (!isAdbScanningActive) {
+        console.log('[*] Master Switch: Disabling live ADB telemetry & killing ADB server...');
+        // Terminate all running host-side agents
+        runningAgents.forEach((proc, serial) => {
+            try { 
+                console.log(`[*] Terminating bridge agent for ${serial}`);
+                proc.kill(); 
+            } catch (e) {}
+        });
+        runningAgents.clear();
+        // Kill adb server daemon to immediately free all sockets & device locks
+        exec('adb kill-server', (err) => {
+            if (err) console.error('[!] Error killing adb server:', err.message);
+            else console.log('[+] ADB server successfully killed.');
+        });
+        broadcastSystemLog("INFO", "🛑 Live Telemetry & ADB Server Switched OFF (Offline Safe Mode)");
+    } else {
+        console.log('[*] Master Switch: Enabling live ADB telemetry & starting ADB server...');
+        exec('adb start-server', (err) => {
+            if (err) console.error('[!] Error starting adb server:', err.message);
+            else console.log('[+] ADB server started.');
+        });
+        broadcastSystemLog("INFO", "▶️ Live Telemetry & ADB Server Switched ON");
+    }
+
+    broadcastToClients({
+        event_type: "adb_status_change",
+        adbActive: isAdbScanningActive
+    });
+
+    res.json({
+        status: "success",
+        adbActive: isAdbScanningActive,
+        message: isAdbScanningActive ? "ADB Server & Live Telemetry enabled" : "ADB Server & Live Telemetry disabled"
+    });
+});
+
 // USB / Wireless ADB Auto-detect endpoint
 app.get('/api/usb-detect', async (req, res) => {
+    if (!isAdbScanningActive) {
+        return res.json({ 
+            status: "disabled", 
+            message: "ADB scanning is currently switched OFF", 
+            devices: [] 
+        });
+    }
+
     try {
         exec('adb devices -l', async (err, stdout) => {
             if (err) {
@@ -503,8 +575,11 @@ app.get('/api/usb-detect', async (req, res) => {
     }
 });
 
-// Background loop: Periodically scans adb devices -l every 4 seconds, broadcasts connected devices, and auto-launches bridge
+// Background loop: Periodically scans adb devices -l every 5 seconds, broadcasts connected devices, and auto-launches bridge
+let lastBroadcastSerials = "";
 setInterval(() => {
+    if (!isAdbScanningActive) return;
+
     exec('adb devices -l', (err, stdout) => {
         if (err || !stdout) return;
         const lines = stdout.split('\n');
@@ -532,14 +607,17 @@ setInterval(() => {
             broadcastSystemLog("HIGH", "📲 Handset Authorization Required: Please unlock your phone screen and tap 'ALLOW' on the debugging prompt.");
         }
 
-        if (connectedSerials.length > 0) {
+        // Only broadcast if the list of connected serials has actually changed
+        const currentSerialsStr = connectedSerials.slice().sort().join(',');
+        if (currentSerialsStr !== lastBroadcastSerials) {
+            lastBroadcastSerials = currentSerialsStr;
             broadcastToClients({
                 event_type: "active_adb_sync",
                 serials: connectedSerials
             });
         }
     });
-}, 4000);
+}, 5000);
 
 // Get all sessions
 app.get('/api/sessions', async (req, res) => {
@@ -873,6 +951,13 @@ const broadcastSystemLog = (threat_level, msgText, devId = 'System') => {
 
 // POST /api/agent/prepare-wireless - strict 3-step sequential USB-to-Wi-Fi handoff
 app.post('/api/agent/prepare-wireless', async (req, res) => {
+    if (!isAdbScanningActive) {
+        return res.status(400).json({ 
+            status: "error", 
+            message: "ADB Scanning is currently switched OFF. Please turn ON the Master ADB Switch in the Add Device modal first." 
+        });
+    }
+
     let { serial } = req.body;
     let activeSerial = "";
 
@@ -880,41 +965,37 @@ app.post('/api/agent/prepare-wireless', async (req, res) => {
 
     // STEP 1: Query adb devices -l to find real hardware serial (resolves model names like 'Infinix_X683')
     const findUsbDevice = async (inputSerial) => {
-        const devicesOutput = await runAdbCommand('adb devices -l');
-        const lines = devicesOutput.split('\n');
-        
-        let exactMatch = "";
-        let modelMatch = "";
-        let firstUsb = "";
+        try {
+            const devicesOutput = await runAdbCommand('adb devices -l');
+            if (!devicesOutput) return "";
+            const lines = devicesOutput.split('\n');
+            
+            let exactMatch = "";
+            let modelMatch = "";
+            let firstUsb = "";
 
-        for (const line of lines) {
-            const parts = line.trim().split(/\s+/);
-            if (parts.length >= 2 && parts[1] === 'device' && !parts[0].includes(':')) {
-                const hardwareSerial = parts[0];
-                if (!firstUsb) firstUsb = hardwareSerial;
+            for (const line of lines) {
+                const parts = line.trim().split(/\s+/);
+                if (parts.length >= 2 && parts[1] === 'device' && !parts[0].includes(':')) {
+                    const hardwareSerial = parts[0];
+                    if (!firstUsb) firstUsb = hardwareSerial;
 
-                if (inputSerial && hardwareSerial === inputSerial) {
-                    exactMatch = hardwareSerial;
-                }
+                    if (inputSerial && hardwareSerial === inputSerial) {
+                        exactMatch = hardwareSerial;
+                    }
 
-                if (inputSerial && line.toLowerCase().includes(inputSerial.toLowerCase())) {
-                    modelMatch = hardwareSerial;
+                    if (inputSerial && line.toLowerCase().includes(inputSerial.toLowerCase())) {
+                        modelMatch = hardwareSerial;
+                    }
                 }
             }
+            return exactMatch || modelMatch || firstUsb;
+        } catch (e) {
+            return "";
         }
-        return exactMatch || modelMatch || firstUsb;
     };
 
     activeSerial = await findUsbDevice(serial);
-
-    // FALLBACK 1: If ADB is unresponsive or no USB device is found, restart ADB server and re-check
-    if (!activeSerial) {
-        console.warn("[!] No active USB device found. Executing Fallback 1: Restarting ADB server...");
-        broadcastSystemLog("HIGH", "[!] No active USB device found. Restarting ADB server daemon...");
-        await runAdbCommand('adb kill-server');
-        await runAdbCommand('adb start-server');
-        activeSerial = await findUsbDevice(serial);
-    }
 
     if (!activeSerial) {
         broadcastSystemLog("HIGH", "[!] Step 1 Failed: USB device not attached or unauthorized.");
@@ -986,10 +1067,8 @@ app.post('/api/agent/prepare-wireless', async (req, res) => {
 
         return res.json({ status: "success", ip, serial: activeSerial });
     } catch (e) {
-        console.error(`[!] Step Execution Error: ${e.message}. Executing Fallback reset...`);
-        broadcastSystemLog("HIGH", `[!] Handset IP Resolution Error: ${e.message}. Restarting ADB daemon...`, activeSerial);
-        await runAdbCommand('adb kill-server');
-        await runAdbCommand('adb start-server');
+        console.error(`[!] Step Execution Error: ${e.message}`);
+        broadcastSystemLog("HIGH", `[!] Handset IP Resolution Error: ${e.message}`, activeSerial);
         return res.status(500).json({ status: "error", message: `Handset connection error: ${e.message}` });
     }
 });

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Shield, Database, Terminal, Search, XCircle, RefreshCw,
   Layers, TrendingUp, TrendingDown, Minus, Fingerprint
@@ -6,15 +6,23 @@ import {
 import { 
   ResponsiveContainer, PieChart, Pie, Cell, Tooltip 
 } from 'recharts';
+import { getApiCache, setApiCache } from '../utils/apiCache';
 
-export default function SystemDashboard({ 
+const SEVERITY_DEFS = [
+  { name: 'Critical',   key: 'CRITICAL',   color: '#ef4444' },
+  { name: 'High',       key: 'HIGH',        color: '#f97316' },
+  { name: 'Suspicious', key: 'SUSPICIOUS',  color: '#eab308' },
+  { name: 'Benign',     key: 'BENIGN',      color: '#10b981' }
+];
+
+function SystemDashboard({ 
   handleThreatClick, 
   getThreatColorClass,
   liveLogs,
   sessions,
   toggleSidebar
 }) {
-  const [stats, setStats] = useState({
+  const [stats, setStats] = useState(() => getApiCache('/api/stats') || {
     max_score: 0,
     total_packets: 0,
     critical_count: 0,
@@ -23,78 +31,98 @@ export default function SystemDashboard({
     benign_count: 0,
     total_devices: 0
   });
-  const [allThreats, setAllThreats] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [allThreats, setAllThreats] = useState(() => getApiCache('/api/threats') || []);
+  const [loading, setLoading] = useState(() => !getApiCache('/api/stats'));
+  const [isRefreshing, setIsRefreshing] = useState(false);
   
   const [severityFilter, setSeverityFilter] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
 
-  const fetchData = async () => {
+  const fetchData = async (isInitial = false) => {
     try {
-      setLoading(true);
+      if (isInitial && !getApiCache('/api/stats')) {
+        setLoading(true);
+      } else {
+        setIsRefreshing(true);
+      }
       const [statsRes, threatsRes] = await Promise.all([
         fetch('/api/stats'),
         fetch('/api/threats')
       ]);
-      if (statsRes.ok) setStats(await statsRes.json());
-      if (threatsRes.ok) setAllThreats(await threatsRes.json());
+      if (statsRes.ok) {
+        const statsData = await statsRes.json();
+        setApiCache('/api/stats', statsData);
+        setStats(prev => JSON.stringify(prev) === JSON.stringify(statsData) ? prev : statsData);
+      }
+      if (threatsRes.ok) {
+        const threatsData = await threatsRes.json();
+        setApiCache('/api/threats', threatsData);
+        setAllThreats(prev => {
+          if (prev.length === threatsData.length && (prev.length === 0 || prev[0].id === threatsData[0].id)) return prev;
+          return threatsData;
+        });
+      }
     } catch (err) {
       console.error('[!] Error loading system data:', err);
     } finally {
       setLoading(false);
+      setIsRefreshing(false);
     }
   };
 
   useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 8000);
+    fetchData(true);
+    const interval = setInterval(() => fetchData(false), 8000);
     return () => clearInterval(interval);
   }, []);
 
   // Use server-side counts — don't recompute from allThreats which may be limited to 500 rows
-  const severityCounts = {
+  const severityCounts = useMemo(() => ({
     CRITICAL:   stats.critical_count   || 0,
     HIGH:       stats.high_count       || 0,
     SUSPICIOUS: stats.suspicious_count || 0,
     BENIGN:     stats.benign_count     || 0
-  };
+  }), [stats]);
 
   const totalPackets = stats.total_packets || 0;
 
   // Pie chart data — include all 4 levels
-  const SEVERITY_DEFS = [
-    { name: 'Critical',   key: 'CRITICAL',   color: '#ef4444' },
-    { name: 'High',       key: 'HIGH',        color: '#f97316' },
-    { name: 'Suspicious', key: 'SUSPICIOUS',  color: '#eab308' },
-    { name: 'Benign',     key: 'BENIGN',      color: '#10b981' }
-  ];
+  const chartData = useMemo(() => {
+    return SEVERITY_DEFS
+      .map(d => ({ ...d, value: severityCounts[d.key] }))
+      .filter(d => d.value > 0);
+  }, [severityCounts]);
 
-  const chartData = SEVERITY_DEFS
-    .map(d => ({ ...d, value: severityCounts[d.key] }))
-    .filter(d => d.value > 0);
-
-  const displayChartData = chartData.length > 0 ? chartData : [
-    { name: 'No Data', value: 1, color: '#374151', key: 'NONE' }
-  ];
+  const displayChartData = useMemo(() => {
+    return chartData.length > 0 ? chartData : [
+      { name: 'No Data', value: 1, color: '#374151', key: 'NONE' }
+    ];
+  }, [chartData]);
 
   // Risk score stats
-  const scores = allThreats.map(t => t.score || 0).filter(s => s > 0);
-  const maxScore = scores.length > 0 ? Math.max(...scores) : stats.max_score || 0;
-  const minScore = scores.length > 0 ? Math.min(...scores) : 0;
-  const avgScore = scores.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : 0;
+  const { maxScore, minScore, avgScore } = useMemo(() => {
+    const scores = allThreats.map(t => t.score || 0).filter(s => s > 0);
+    const max = scores.length > 0 ? Math.max(...scores) : stats.max_score || 0;
+    const min = scores.length > 0 ? Math.min(...scores) : 0;
+    const avg = scores.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : 0;
+    return { maxScore: max, minScore: min, avgScore: avg };
+  }, [allThreats, stats.max_score]);
 
   const handleSliceClick = (entry) => {
     setSeverityFilter(prev => prev === entry.key ? null : entry.key);
   };
 
-  const filteredThreats = allThreats.filter(threat => {
-    const matchesSeverity = severityFilter ? threat.threat_level === severityFilter : true;
-    const matchesSearch = searchQuery 
-      ? (threat.app_package?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-         threat.device_id?.toLowerCase().includes(searchQuery.toLowerCase()))
-      : true;
-    return matchesSeverity && matchesSearch;
-  });
+  const filteredThreats = useMemo(() => {
+    const q = searchQuery.toLowerCase().trim();
+    return allThreats.filter(threat => {
+      const matchesSeverity = severityFilter ? threat.threat_level === severityFilter : true;
+      const matchesSearch = q 
+        ? (threat.app_package?.toLowerCase().includes(q) ||
+           threat.device_id?.toLowerCase().includes(q))
+        : true;
+      return matchesSeverity && matchesSearch;
+    });
+  }, [allThreats, severityFilter, searchQuery]);
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -150,6 +178,7 @@ export default function SystemDashboard({
                     dataKey="value"
                     cursor="pointer"
                     onClick={handleSliceClick}
+                    isAnimationActive={false}
                   >
                     {displayChartData.map((entry, idx) => (
                       <Cell
@@ -328,7 +357,7 @@ export default function SystemDashboard({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/[0.02] font-sans">
-                    {filteredThreats.map(alert => (
+                    {filteredThreats.slice(0, 100).map(alert => (
                       <tr
                         key={alert.id}
                         onClick={() => handleThreatClick(alert)}
@@ -393,3 +422,5 @@ export default function SystemDashboard({
     </div>
   );
 }
+
+export default React.memo(SystemDashboard);

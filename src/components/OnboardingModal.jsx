@@ -5,12 +5,15 @@ import {
   Play, Square, Loader2, X, AlertTriangle, Network
 } from 'lucide-react';
 
-export default function OnboardingModal({ isOpen, onClose, onRegisterSuccess }) {
+export default function OnboardingModal({ isOpen, onClose, onRegisterSuccess, isAdbActive = true, onToggleAdb }) {
   const [serverInfo, setServerInfo] = useState({ localIp: '', port: 4444, bootstrapUrl: '' });
   const [detectedDevices, setDetectedDevices] = useState([]);
   const [selectedProfile, setSelectedProfile] = useState('modern'); // 'modern', 'x86_64'
   const [copied, setCopied] = useState(false);
   
+  // Master Switch state
+  const [isTogglingAdb, setIsTogglingAdb] = useState(false);
+
   // Scan / Bridge States
   const [isScanning, setIsScanning] = useState(false);
   const [runningSerials, setRunningSerials] = useState([]);
@@ -38,14 +41,47 @@ export default function OnboardingModal({ isOpen, onClose, onRegisterSuccess }) 
       })
       .catch(err => console.error('[!] Error fetching server info:', err));
 
-    handleScan();
+    if (isAdbActive) {
+      handleScan();
+    }
     
-    // Periodically sync running agents
-    const timer = setInterval(fetchRunningAgents, 3000);
-    return () => clearInterval(timer);
-  }, [isOpen]);
+    // Periodically sync running agents only if ADB is active
+    let timer = null;
+    if (isAdbActive) {
+      timer = setInterval(fetchRunningAgents, 3000);
+    }
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [isOpen, isAdbActive]);
+
+  const handleToggleAdb = async () => {
+    setIsTogglingAdb(true);
+    if (onToggleAdb) {
+      await onToggleAdb();
+    } else {
+      try {
+        const res = await fetch('/api/system/toggle-adb', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ active: !isAdbActive })
+        });
+        await res.json();
+      } catch (err) {
+        console.error('[!] Error toggling ADB:', err);
+      }
+    }
+    setIsTogglingAdb(false);
+    if (!isAdbActive) {
+      setTimeout(handleScan, 800);
+    } else {
+      setDetectedDevices([]);
+      setSelectedDevice(null);
+    }
+  };
 
   const fetchRunningAgents = () => {
+    if (!isAdbActive) return;
     fetch('/api/agent/status')
       .then(res => res.json())
       .then(data => {
@@ -57,6 +93,11 @@ export default function OnboardingModal({ isOpen, onClose, onRegisterSuccess }) 
   };
 
   const handleScan = () => {
+    if (!isAdbActive) {
+      setDetectedDevices([]);
+      setSelectedDevice(null);
+      return;
+    }
     setIsScanning(true);
     fetch('/api/usb-detect')
       .then(res => res.json())
@@ -240,19 +281,86 @@ export default function OnboardingModal({ isOpen, onClose, onRegisterSuccess }) 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
           
+          {/* Master Switch for ADB Daemon & Live Telemetry Polling */}
+          <div className={`p-4 rounded-xl border transition-all duration-300 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 ${
+            isAdbActive
+              ? 'bg-gradient-to-r from-emerald-500/10 via-cyan-500/5 to-transparent border-emerald-500/30 shadow-[0_0_20px_rgba(16,185,129,0.08)]'
+              : 'bg-slate-900/80 border-slate-700/60 shadow-inner'
+          }`}>
+            <div className="flex items-center gap-3.5">
+              <div className={`p-2.5 rounded-xl border transition-colors ${
+                isAdbActive 
+                  ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40 shadow-[0_0_12px_rgba(16,185,129,0.3)]' 
+                  : 'bg-slate-800 text-slate-500 border-slate-700'
+              }`}>
+                <Radio className={`w-5 h-5 ${isAdbActive ? 'animate-pulse text-emerald-400' : 'text-slate-500'}`} />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-sm font-bold font-outfit text-white">
+                    {isAdbActive ? "Live Telemetry & ADB Server Active" : "ADB Server & Telemetry Switched OFF"}
+                  </h3>
+                  <span className={`text-[9px] font-mono font-bold px-2 py-0.5 rounded-full border uppercase tracking-wider ${
+                    isAdbActive 
+                      ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' 
+                      : 'bg-slate-800 text-slate-400 border-slate-700'
+                  }`}>
+                    {isAdbActive ? "LIVE SCAN ON" : "OFFLINE SAFE MODE"}
+                  </span>
+                </div>
+                <p className="text-xs text-gray-400 mt-0.5">
+                  {isAdbActive 
+                    ? "ADB background scanning and host telemetry bridge are actively polling connected devices." 
+                    : "ADB daemon is stopped. Background polling is paused so you can browse the frontend with zero freezing or lag."}
+                </p>
+              </div>
+            </div>
+
+            <button
+              onClick={handleToggleAdb}
+              disabled={isTogglingAdb}
+              className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer shadow-md active:scale-95 flex-shrink-0 ${
+                isAdbActive
+                  ? 'bg-rose-500/15 hover:bg-rose-500/25 text-rose-400 border border-rose-500/30 hover:shadow-[0_0_12px_rgba(244,63,94,0.3)]'
+                  : 'bg-emerald-500 hover:bg-emerald-400 text-black border border-emerald-400/50 shadow-[0_0_15px_rgba(16,185,129,0.4)]'
+              }`}
+            >
+              {isTogglingAdb ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : isAdbActive ? (
+                <Square className="w-3.5 h-3.5 fill-current" />
+              ) : (
+                <Play className="w-3.5 h-3.5 fill-current" />
+              )}
+              {isTogglingAdb 
+                ? "Switching..." 
+                : isAdbActive 
+                  ? "Switch OFF (Kill ADB Server)" 
+                  : "Switch ON (Start Live Telemetry)"}
+            </button>
+          </div>
+
           {/* Quick Stats / Scan Trigger */}
           <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white/[0.01] border border-white/5 rounded-xl p-4">
             <div>
               <h3 className="text-xs font-bold text-gray-300 uppercase tracking-widest">Target Scan Control</h3>
-              <p className="text-[11px] text-gray-500 mt-0.5">Detect physical handsets connected over USB debug bridge</p>
+              <p className="text-[11px] text-gray-500 mt-0.5">
+                {isAdbActive 
+                  ? "Detect physical handsets connected over USB debug bridge" 
+                  : "Scanning is paused while ADB Server is switched OFF"}
+              </p>
             </div>
             <button
               onClick={handleScan}
-              disabled={isScanning}
-              className="flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-500 disabled:bg-cyan-800 text-white text-xs font-bold rounded-xl transition-all shadow-md"
+              disabled={isScanning || !isAdbActive}
+              className={`flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-xl transition-all shadow-md ${
+                isAdbActive 
+                  ? 'bg-cyan-600 hover:bg-cyan-500 disabled:bg-cyan-800 text-white cursor-pointer' 
+                  : 'bg-slate-800 border border-slate-700 text-slate-500 cursor-not-allowed opacity-60'
+              }`}
             >
               {isScanning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
-              {isScanning ? "Scanning USB..." : "Scan USB Devices"}
+              {isScanning ? "Scanning USB..." : isAdbActive ? "Scan USB Devices" : "ADB Switched OFF"}
             </button>
           </div>
 
@@ -267,8 +375,11 @@ export default function OnboardingModal({ isOpen, onClose, onRegisterSuccess }) 
                   <div className="flex flex-col items-center justify-center p-8 bg-black/20 rounded-xl border border-white/[0.02] text-center space-y-3">
                     <Smartphone className="w-8 h-8 text-gray-700" />
                     <div className="text-[10px] text-gray-500 font-mono">
-                      No USB-ADB devices found.<br/>
-                      Ensure USB Debugging is active on your target handset.
+                      {!isAdbActive ? (
+                        <>ADB server is currently switched OFF.<br/>Click "Switch ON" above to scan for devices.</>
+                      ) : (
+                        <>No USB-ADB devices found.<br/>Ensure USB Debugging is active on your target handset.</>
+                      )}
                     </div>
                   </div>
                 ) : (

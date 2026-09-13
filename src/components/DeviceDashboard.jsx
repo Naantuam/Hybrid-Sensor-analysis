@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   AlertTriangle, Smartphone, Terminal, Database, Shield, Activity, 
   Menu, Play, Square, Loader2, RefreshCw, Download, Radio, Network, Clock, Fingerprint
@@ -7,6 +7,7 @@ import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid 
 } from 'recharts';
 import LiveConsole from './LiveConsole';
+import { getApiCache, setApiCache } from '../utils/apiCache';
 
 // Custom dot component for the risk score line chart to show severity-coded dot colors
 const SeverityDot = (props) => {
@@ -25,7 +26,7 @@ const SeverityDot = (props) => {
   );
 };
 
-export default function DeviceDashboard({
+function DeviceDashboard({
   selectedSession,
   kpis,
   threats,
@@ -38,14 +39,14 @@ export default function DeviceDashboard({
   const [activeTab, setActiveTab] = useState('threats'); // 'threats', 'live', 'details'
   
   // Controls states
-  const [runningSerials, setRunningSerials] = useState([]);
+  const [runningSerials, setRunningSerials] = useState(() => getApiCache('/api/agent/status')?.activeSerials || []);
   const [isProvisioning, setIsProvisioning] = useState(false);
   const [provisionStatus, setProvisionStatus] = useState('');
   const [wirelessHandoffStep, setWirelessHandoffStep] = useState(0); // 0=ready, 1=preparing, 2=unplug, 3=connecting, 4=success, 5=unauthorized
   const [resolvedIp, setResolvedIp] = useState('');
   
   // Local telemetry events & view filter
-  const [events, setEvents] = useState([]);
+  const [events, setEvents] = useState(() => (selectedSession ? getApiCache(`/api/sessions/${selectedSession.id}/events`) || [] : []));
   const [logTableFilter, setLogTableFilter] = useState('all'); // 'all' or 'threats'
   
   // Sync running agents list and device events
@@ -57,7 +58,12 @@ export default function DeviceDashboard({
       .then(res => res.json())
       .then(data => {
         if (data.status === 'success') {
-          setRunningSerials(data.activeSerials || []);
+          setApiCache('/api/agent/status', data, 15000);
+          const nextSerials = data.activeSerials || [];
+          setRunningSerials(prev => {
+            if (prev.length === nextSerials.length && prev.every((s, i) => s === nextSerials[i])) return prev;
+            return nextSerials;
+          });
         }
       })
       .catch(err => console.error('[!] Error fetching agent statuses:', err));
@@ -66,12 +72,19 @@ export default function DeviceDashboard({
     fetch(`/api/sessions/${selectedSession.id}/events`)
       .then(res => res.json())
       .then(data => {
-        setEvents(data || []);
+        const eventsData = data || [];
+        setApiCache(`/api/sessions/${selectedSession.id}/events`, eventsData);
+        setEvents(prev => {
+          if (prev.length === eventsData.length && (prev.length === 0 || prev[0].id === eventsData[0].id)) {
+            return prev;
+          }
+          return eventsData;
+        });
       })
       .catch(err => console.error('[!] Error loading session events:', err));
   };
 
-  // Dynamic live handset Wi-Fi IP resolution
+  // Set resolved IP from session info
   useEffect(() => {
     if (!selectedSession) return;
     
@@ -84,26 +97,24 @@ export default function DeviceDashboard({
       }
     }
 
-    // 2. Fetch live handset Wi-Fi IP address dynamically from the handset
-    fetch('/api/agent/prepare-wireless', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ serial: selectedSession.device_id })
-    })
-    .then(res => res.json())
-    .then(data => {
-      if (data.status === 'success' && data.ip) {
-        setResolvedIp(data.ip);
-      }
-    })
-    .catch(() => {});
+    // 2. If session already has an IP address stored
+    if (selectedSession.ip_address && selectedSession.ip_address !== '127.0.0.1' && selectedSession.ip_address !== '0.0.0.0') {
+      setResolvedIp(selectedSession.ip_address);
+      return;
+    }
+
+    setResolvedIp('');
   }, [selectedSession]);
 
   useEffect(() => {
+    if (selectedSession) {
+      const cached = getApiCache(`/api/sessions/${selectedSession.id}/events`);
+      if (cached) setEvents(cached);
+    }
     syncDeviceDetails();
     const interval = setInterval(syncDeviceDetails, 4000);
     return () => clearInterval(interval);
-  }, [selectedSession]);
+  }, [selectedSession?.id]);
 
   const toggleAgent = () => {
     if (!selectedSession) return;
@@ -224,8 +235,8 @@ export default function DeviceDashboard({
     });
   };
 
-  // Compile timeline data for the charts
-  const getChartsData = () => {
+  // Compile timeline data for the charts (memoized to prevent re-calculations and re-animation stutter)
+  const { telTimeline, threatTimeline } = useMemo(() => {
     // 1. Compile Telemetry Events over time (bucketed by minute)
     const telGroup = {};
     events.forEach(e => {
@@ -270,9 +281,53 @@ export default function DeviceDashboard({
     ];
 
     return { telTimeline: fallbackTel, threatTimeline: fallbackThreat };
-  };
+  }, [events, threats]);
 
-  const { telTimeline, threatTimeline } = getChartsData();
+  // Memoize unified items, distribution counts, and filtered table data to eliminate render-loop lag
+  const allItems = useMemo(() => {
+    return threats.length > 0 ? threats : events.map(e => ({
+      ...e,
+      threat_level: e.app_state === 'BACKGROUND' ? 'HIGH' : 'BENIGN',
+      score: e.app_state === 'BACKGROUND' ? 45 : 10
+    }));
+  }, [threats, events]);
+
+  const classCounts = useMemo(() => {
+    const totalCount = allItems.length || 1;
+    let criticalCount = 0;
+    let highCount = 0;
+    let suspiciousCount = 0;
+    let benignCount = 0;
+
+    for (let i = 0; i < allItems.length; i++) {
+      const level = allItems[i].threat_level;
+      if (level === 'CRITICAL') criticalCount++;
+      else if (level === 'HIGH') highCount++;
+      else if (level === 'SUSPICIOUS') suspiciousCount++;
+      else benignCount++;
+    }
+
+    return {
+      totalCount,
+      criticalCount,
+      highCount,
+      suspiciousCount,
+      benignCount,
+      critPct: Math.round((criticalCount / totalCount) * 100),
+      highPct: Math.round((highCount / totalCount) * 100),
+      suspPct: Math.round((suspiciousCount / totalCount) * 100),
+      benignPct: Math.round((benignCount / totalCount) * 100)
+    };
+  }, [allItems]);
+
+  const filteredItems = useMemo(() => {
+    return allItems.filter(item => {
+      if (logTableFilter === 'all') return true;
+      if (logTableFilter === 'BENIGN') return item.threat_level === 'BENIGN' || item.threat_level === 'INFO';
+      return item.threat_level === logTableFilter;
+    });
+  }, [allItems, logTableFilter]);
+
   const isBridgeRunning = runningSerials.includes(selectedSession?.device_id);
 
   return (
@@ -339,7 +394,7 @@ export default function DeviceDashboard({
 
                   <span className="text-gray-500">IP address:</span>
                   <span className="font-semibold text-cyan-400">
-                    {resolvedIp || (selectedSession?.ip_address && selectedSession.ip_address !== '127.0.0.1' && selectedSession.ip_address !== '0.0.0.0' ? selectedSession.ip_address : 'Resolving live IP...')}
+                    {resolvedIp || (selectedSession?.ip_address && selectedSession.ip_address !== '127.0.0.1' && selectedSession.ip_address !== '0.0.0.0' ? selectedSession.ip_address : (selectedSession?.connection_type === 'usb_adb' ? 'USB Attached' : '127.0.0.1'))}
                   </span>
 
                   <span className="text-gray-500">Battery Saver:</span>
@@ -447,145 +502,123 @@ export default function DeviceDashboard({
             </div>
 
             {/* MIDDLE ROW: INTERACTIVE THREAT CLASS DISTRIBUTION BAR */}
-            {(() => {
-              // Use actual threats array which includes all levels including BENIGN
-              const allItems = threats.length > 0 ? threats : events.map(e => ({
-                ...e,
-                threat_level: e.app_state === 'BACKGROUND' ? 'HIGH' : 'BENIGN',
-                score: e.app_state === 'BACKGROUND' ? 45 : 10
-              }));
-              
-              const totalCount = allItems.length || 1;
-              const criticalCount = allItems.filter(t => t.threat_level === 'CRITICAL').length;
-              const highCount = allItems.filter(t => t.threat_level === 'HIGH').length;
-              const suspiciousCount = allItems.filter(t => t.threat_level === 'SUSPICIOUS').length;
-              const benignCount = allItems.filter(t => t.threat_level === 'BENIGN' || t.threat_level === 'INFO').length;
-
-              const critPct = Math.round((criticalCount / totalCount) * 100);
-              const highPct = Math.round((highCount / totalCount) * 100);
-              const suspPct = Math.round((suspiciousCount / totalCount) * 100);
-              const benignPct = Math.round((benignCount / totalCount) * 100);
-
-              return (
-                <div className="bg-[#10111a]/60 border border-white/5 rounded-2xl p-5 backdrop-blur-md space-y-4">
-                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
-                    <div>
-                      <h4 className="text-xs font-extrabold text-white uppercase tracking-wider flex items-center gap-2">
-                        <Shield className="w-4 h-4 text-cyan-400" />
-                        Threat Class Distribution Bar
-                      </h4>
-                      <p className="text-[10px] text-gray-400 mt-0.5">Click any color segment or threat class pill below to analyze incidents by severity level</p>
-                    </div>
-
-                    {/* CLASS FILTER PILLS */}
-                    <div className="flex flex-wrap gap-1.5">
-                      <button
-                        onClick={() => setLogTableFilter('all')}
-                        className={`px-3 py-1 rounded-lg text-[10px] font-extrabold uppercase transition-all ${
-                          logTableFilter === 'all'
-                            ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 shadow-sm'
-                            : 'bg-white/[0.03] text-gray-400 border border-white/5 hover:text-white'
-                        }`}
-                      >
-                        ALL ({allItems.length})
-                      </button>
-
-                      <button
-                        onClick={() => setLogTableFilter('CRITICAL')}
-                        className={`px-3 py-1 rounded-lg text-[10px] font-extrabold uppercase transition-all flex items-center gap-1.5 ${
-                          logTableFilter === 'CRITICAL'
-                            ? 'bg-rose-500/25 text-rose-300 border border-rose-500/40 shadow-[0_0_12px_rgba(244,63,94,0.3)]'
-                            : 'bg-rose-500/10 text-rose-400 border border-rose-500/20 hover:bg-rose-500/20'
-                        }`}
-                      >
-                        <span className="w-2 h-2 rounded-full bg-rose-500" />
-                        CRITICAL ({criticalCount})
-                      </button>
-
-                      <button
-                        onClick={() => setLogTableFilter('HIGH')}
-                        className={`px-3 py-1 rounded-lg text-[10px] font-extrabold uppercase transition-all flex items-center gap-1.5 ${
-                          logTableFilter === 'HIGH'
-                            ? 'bg-orange-500/25 text-orange-300 border border-orange-500/40 shadow-[0_0_12px_rgba(249,115,22,0.3)]'
-                            : 'bg-orange-500/10 text-orange-400 border border-orange-500/20 hover:bg-orange-500/20'
-                        }`}
-                      >
-                        <span className="w-2 h-2 rounded-full bg-orange-500" />
-                        HIGH ({highCount})
-                      </button>
-
-                      <button
-                        onClick={() => setLogTableFilter('SUSPICIOUS')}
-                        className={`px-3 py-1 rounded-lg text-[10px] font-extrabold uppercase transition-all flex items-center gap-1.5 ${
-                          logTableFilter === 'SUSPICIOUS'
-                            ? 'bg-amber-400/25 text-amber-200 border border-amber-400/40 shadow-[0_0_12px_rgba(245,158,11,0.3)]'
-                            : 'bg-amber-500/10 text-amber-400 border border-amber-500/20 hover:bg-amber-500/20'
-                        }`}
-                      >
-                        <span className="w-2 h-2 rounded-full bg-amber-400" />
-                        SUSPICIOUS ({suspiciousCount})
-                      </button>
-
-                      <button
-                        onClick={() => setLogTableFilter('BENIGN')}
-                        className={`px-3 py-1 rounded-lg text-[10px] font-extrabold uppercase transition-all flex items-center gap-1.5 ${
-                          logTableFilter === 'BENIGN'
-                            ? 'bg-emerald-500/25 text-emerald-300 border border-emerald-500/40 shadow-[0_0_12px_rgba(16,185,129,0.3)]'
-                            : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/20'
-                        }`}
-                      >
-                        <span className="w-2 h-2 rounded-full bg-emerald-500" />
-                        BENIGN ({benignCount})
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* DYNAMIC COLOR BAR */}
-                  <div className="h-5 w-full bg-black/40 rounded-xl overflow-hidden flex border border-white/10 p-0.5 gap-0.5 cursor-pointer">
-                    {critPct > 0 && (
-                      <div
-                        onClick={() => setLogTableFilter('CRITICAL')}
-                        style={{ width: `${critPct}%` }}
-                        className="h-full bg-rose-500 hover:bg-rose-400 transition-all rounded-l text-[9px] font-extrabold text-white flex items-center justify-center truncate px-1"
-                        title={`CRITICAL: ${criticalCount} (${critPct}%)`}
-                      >
-                        {critPct > 8 ? `${critPct}%` : ''}
-                      </div>
-                    )}
-                    {highPct > 0 && (
-                      <div
-                        onClick={() => setLogTableFilter('HIGH')}
-                        style={{ width: `${highPct}%` }}
-                        className="h-full bg-orange-500 hover:bg-orange-400 transition-all text-[9px] font-extrabold text-white flex items-center justify-center truncate px-1"
-                        title={`HIGH: ${highCount} (${highPct}%)`}
-                      >
-                        {highPct > 8 ? `${highPct}%` : ''}
-                      </div>
-                    )}
-                    {suspPct > 0 && (
-                      <div
-                        onClick={() => setLogTableFilter('SUSPICIOUS')}
-                        style={{ width: `${suspPct}%` }}
-                        className="h-full bg-amber-400 hover:bg-amber-300 transition-all text-[9px] font-extrabold text-gray-950 flex items-center justify-center truncate px-1"
-                        title={`SUSPICIOUS: ${suspiciousCount} (${suspPct}%)`}
-                      >
-                        {suspPct > 8 ? `${suspPct}%` : ''}
-                      </div>
-                    )}
-                    {benignPct > 0 && (
-                      <div
-                        onClick={() => setLogTableFilter('BENIGN')}
-                        style={{ width: `${benignPct}%` }}
-                        className="h-full bg-emerald-500 hover:bg-emerald-400 transition-all rounded-r text-[9px] font-extrabold text-white flex items-center justify-center truncate px-1"
-                        title={`BENIGN: ${benignCount} (${benignPct}%)`}
-                      >
-                        {benignPct > 8 ? `${benignPct}%` : ''}
-                      </div>
-                    )}
-                  </div>
+            <div className="bg-[#10111a]/60 border border-white/5 rounded-2xl p-5 backdrop-blur-md space-y-4">
+              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+                <div>
+                  <h4 className="text-xs font-extrabold text-white uppercase tracking-wider flex items-center gap-2">
+                    <Shield className="w-4 h-4 text-cyan-400" />
+                    Threat Class Distribution Bar
+                  </h4>
+                  <p className="text-[10px] text-gray-400 mt-0.5">Click any color segment or threat class pill below to analyze incidents by severity level</p>
                 </div>
-              );
-            })()}
+
+                {/* CLASS FILTER PILLS */}
+                <div className="flex flex-wrap gap-1.5">
+                  <button
+                    onClick={() => setLogTableFilter('all')}
+                    className={`px-3 py-1 rounded-lg text-[10px] font-extrabold uppercase transition-all ${
+                      logTableFilter === 'all'
+                        ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 shadow-sm'
+                        : 'bg-white/[0.03] text-gray-400 border border-white/5 hover:text-white'
+                    }`}
+                  >
+                    ALL ({classCounts.totalCount})
+                  </button>
+
+                  <button
+                    onClick={() => setLogTableFilter('CRITICAL')}
+                    className={`px-3 py-1 rounded-lg text-[10px] font-extrabold uppercase transition-all flex items-center gap-1.5 ${
+                      logTableFilter === 'CRITICAL'
+                        ? 'bg-rose-500/25 text-rose-300 border border-rose-500/40 shadow-[0_0_12px_rgba(244,63,94,0.3)]'
+                        : 'bg-rose-500/10 text-rose-400 border border-rose-500/20 hover:bg-rose-500/20'
+                    }`}
+                  >
+                    <span className="w-2 h-2 rounded-full bg-rose-500" />
+                    CRITICAL ({classCounts.criticalCount})
+                  </button>
+
+                  <button
+                    onClick={() => setLogTableFilter('HIGH')}
+                    className={`px-3 py-1 rounded-lg text-[10px] font-extrabold uppercase transition-all flex items-center gap-1.5 ${
+                      logTableFilter === 'HIGH'
+                        ? 'bg-orange-500/25 text-orange-300 border border-orange-500/40 shadow-[0_0_12px_rgba(249,115,22,0.3)]'
+                        : 'bg-orange-500/10 text-orange-400 border border-orange-500/20 hover:bg-orange-500/20'
+                    }`}
+                  >
+                    <span className="w-2 h-2 rounded-full bg-orange-500" />
+                    HIGH ({classCounts.highCount})
+                  </button>
+
+                  <button
+                    onClick={() => setLogTableFilter('SUSPICIOUS')}
+                    className={`px-3 py-1 rounded-lg text-[10px] font-extrabold uppercase transition-all flex items-center gap-1.5 ${
+                      logTableFilter === 'SUSPICIOUS'
+                        ? 'bg-amber-400/25 text-amber-200 border border-amber-400/40 shadow-[0_0_12px_rgba(245,158,11,0.3)]'
+                        : 'bg-amber-500/10 text-amber-400 border border-amber-500/20 hover:bg-amber-500/20'
+                    }`}
+                  >
+                    <span className="w-2 h-2 rounded-full bg-amber-400" />
+                    SUSPICIOUS ({classCounts.suspiciousCount})
+                  </button>
+
+                  <button
+                    onClick={() => setLogTableFilter('BENIGN')}
+                    className={`px-3 py-1 rounded-lg text-[10px] font-extrabold uppercase transition-all flex items-center gap-1.5 ${
+                      logTableFilter === 'BENIGN'
+                        ? 'bg-emerald-500/25 text-emerald-300 border border-emerald-500/40 shadow-[0_0_12px_rgba(16,185,129,0.3)]'
+                        : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/20'
+                    }`}
+                  >
+                    <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                    BENIGN ({classCounts.benignCount})
+                  </button>
+                </div>
+              </div>
+
+              {/* DYNAMIC COLOR BAR */}
+              <div className="h-5 w-full bg-black/40 rounded-xl overflow-hidden flex border border-white/10 p-0.5 gap-0.5 cursor-pointer">
+                {classCounts.critPct > 0 && (
+                  <div
+                    onClick={() => setLogTableFilter('CRITICAL')}
+                    style={{ width: `${classCounts.critPct}%` }}
+                    className="h-full bg-rose-500 hover:bg-rose-400 transition-all rounded-l text-[9px] font-extrabold text-white flex items-center justify-center truncate px-1"
+                    title={`CRITICAL: ${classCounts.criticalCount} (${classCounts.critPct}%)`}
+                  >
+                    {classCounts.critPct > 8 ? `${classCounts.critPct}%` : ''}
+                  </div>
+                )}
+                {classCounts.highPct > 0 && (
+                  <div
+                    onClick={() => setLogTableFilter('HIGH')}
+                    style={{ width: `${classCounts.highPct}%` }}
+                    className="h-full bg-orange-500 hover:bg-orange-400 transition-all text-[9px] font-extrabold text-white flex items-center justify-center truncate px-1"
+                    title={`HIGH: ${classCounts.highCount} (${classCounts.highPct}%)`}
+                  >
+                    {classCounts.highPct > 8 ? `${classCounts.highPct}%` : ''}
+                  </div>
+                )}
+                {classCounts.suspPct > 0 && (
+                  <div
+                    onClick={() => setLogTableFilter('SUSPICIOUS')}
+                    style={{ width: `${classCounts.suspPct}%` }}
+                    className="h-full bg-amber-400 hover:bg-amber-300 transition-all text-[9px] font-extrabold text-gray-950 flex items-center justify-center truncate px-1"
+                    title={`SUSPICIOUS: ${classCounts.suspiciousCount} (${classCounts.suspPct}%)`}
+                  >
+                    {classCounts.suspPct > 8 ? `${classCounts.suspPct}%` : ''}
+                  </div>
+                )}
+                {classCounts.benignPct > 0 && (
+                  <div
+                    onClick={() => setLogTableFilter('BENIGN')}
+                    style={{ width: `${classCounts.benignPct}%` }}
+                    className="h-full bg-emerald-500 hover:bg-emerald-400 transition-all rounded-r text-[9px] font-extrabold text-white flex items-center justify-center truncate px-1"
+                    title={`BENIGN: ${classCounts.benignCount} (${classCounts.benignPct}%)`}
+                  >
+                    {classCounts.benignPct > 8 ? `${classCounts.benignPct}%` : ''}
+                  </div>
+                )}
+              </div>
+            </div>
 
             {/* VULNERABILITY TREND LINE CHART */}
             <div className="bg-[#10111a]/60 border border-white/5 rounded-2xl p-5 backdrop-blur-md space-y-4">
@@ -621,9 +654,10 @@ export default function DeviceDashboard({
                       type="monotone" 
                       dataKey="score" 
                       stroke="#f97316" 
-                      strokeWidth={1.5}
+                      strokeWidth={2}
                       dot={<SeverityDot />}
                       activeDot={{ r: 6 }}
+                      isAnimationActive={false}
                     />
                   </LineChart>
                 </ResponsiveContainer>
@@ -643,68 +677,52 @@ export default function DeviceDashboard({
               </div>
 
               <div className="overflow-x-auto max-h-80 pr-1">
-                {(() => {
-                  const itemsToDisplay = (threats.length > 0 ? threats : events.map(e => ({
-                    ...e,
-                    threat_level: e.app_state === 'BACKGROUND' ? 'HIGH' : 'BENIGN',
-                    score: e.app_state === 'BACKGROUND' ? 45 : 10
-                  }))).filter(item => {
-                    if (logTableFilter === 'all') return true;
-                    if (logTableFilter === 'BENIGN') return item.threat_level === 'BENIGN' || item.threat_level === 'INFO';
-                    return item.threat_level === logTableFilter;
-                  });
-
-                  if (itemsToDisplay.length === 0) {
-                    return (
-                      <div className="flex flex-col items-center justify-center py-10 text-gray-500 space-y-2">
-                        <Database className="w-8 h-8 opacity-30" />
-                        <p className="text-xs">No incidents found matching the "{logTableFilter}" threat class.</p>
-                      </div>
-                    );
-                  }
-
-                  return (
-                    <table className="w-full text-left text-xs border-collapse">
-                      <thead>
-                        <tr className="text-gray-500 border-b border-white/5 uppercase text-[8px] tracking-widest font-extrabold">
-                          <th className="py-2 px-3">Audit Timestamp</th>
-                          <th className="py-2 px-3">Target App Package</th>
-                          <th className="py-2 px-3">Sensor Subsystem</th>
-                          <th className="py-2 px-3">Class / Severity</th>
-                          <th className="py-2 px-3 text-right">Risk Score</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-white/[0.02]">
-                        {itemsToDisplay.map((alert, idx) => {
-                          const isSelected = selectedThreat?.id === alert.id;
-                          return (
-                            <tr 
-                              key={alert.id || idx}
-                              onClick={() => handleThreatClick(alert)}
-                              className={`hover:bg-cyan-500/[0.04] hover:text-white cursor-pointer transition-colors duration-150 ${
-                                isSelected ? 'bg-cyan-500/10 text-cyan-400 font-semibold' : ''
-                              }`}
-                            >
-                              <td className="py-2.5 px-3 whitespace-nowrap font-mono text-[9px] text-gray-400">
-                                {new Date(alert.timestamp || alert.connected_at || alert.created_at || Date.now()).toLocaleString()}
-                              </td>
-                              <td className="py-2.5 px-3 font-semibold text-gray-200 font-mono text-[10px]">{alert.app_package}</td>
-                              <td className="py-2.5 px-3 font-semibold text-cyan-400 font-mono text-[10px]">{alert.sensor_name || alert.payload_summary?.sensor_name || 'Multi-Sensor'}</td>
-                              <td className="py-2.5 px-3">
-                                <span className={`inline-block px-2 py-0.5 rounded text-[8px] font-extrabold uppercase ${getThreatColorClass(alert.threat_level)}`}>
-                                  {alert.threat_level || 'BENIGN'}
-                                </span>
-                              </td>
-                              <td className="py-2.5 px-3 text-right font-extrabold font-mono text-cyan-400">
-                                {alert.score || 10} pts
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  );
-                })()}
+                {filteredItems.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center py-10 text-gray-500 space-y-2">
+                    <Database className="w-8 h-8 opacity-30" />
+                    <p className="text-xs">No incidents found matching the "{logTableFilter}" threat class.</p>
+                  </div>
+                ) : (
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead>
+                      <tr className="text-gray-500 border-b border-white/5 uppercase text-[8px] tracking-widest font-extrabold">
+                        <th className="py-2 px-3">Audit Timestamp</th>
+                        <th className="py-2 px-3">Target App Package</th>
+                        <th className="py-2 px-3">Sensor Subsystem</th>
+                        <th className="py-2 px-3">Class / Severity</th>
+                        <th className="py-2 px-3 text-right">Risk Score</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/[0.02]">
+                      {filteredItems.slice(0, 100).map((alert, idx) => {
+                        const isSelected = selectedThreat?.id === alert.id;
+                        return (
+                          <tr 
+                            key={alert.id || idx}
+                            onClick={() => handleThreatClick(alert)}
+                            className={`hover:bg-cyan-500/[0.04] hover:text-white cursor-pointer transition-colors duration-150 ${
+                              isSelected ? 'bg-cyan-500/10 text-cyan-400 font-semibold' : ''
+                            }`}
+                          >
+                            <td className="py-2.5 px-3 whitespace-nowrap font-mono text-[9px] text-gray-400">
+                              {new Date(alert.timestamp || alert.connected_at || alert.created_at || Date.now()).toLocaleString()}
+                            </td>
+                            <td className="py-2.5 px-3 font-semibold text-gray-200 font-mono text-[10px]">{alert.app_package}</td>
+                            <td className="py-2.5 px-3 font-semibold text-cyan-400 font-mono text-[10px]">{alert.sensor_name || alert.payload_summary?.sensor_name || 'Multi-Sensor'}</td>
+                            <td className="py-2.5 px-3">
+                              <span className={`inline-block px-2 py-0.5 rounded text-[8px] font-extrabold uppercase ${getThreatColorClass(alert.threat_level)}`}>
+                                {alert.threat_level || 'BENIGN'}
+                              </span>
+                            </td>
+                            <td className="py-2.5 px-3 text-right font-extrabold font-mono text-cyan-400">
+                              {alert.score || 10} pts
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )}
               </div>
             </div>
 
@@ -769,3 +787,5 @@ export default function DeviceDashboard({
     </div>
   );
 }
+
+export default React.memo(DeviceDashboard);

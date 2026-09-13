@@ -49,3 +49,13 @@ body {
   animation: biometricPulse 3s ease-in-out infinite;
 }
 
+@keyframes loadingBar {
+  0% { transform: translateX(-100%); width: 30%; }
+  50% { transform: translateX(50%); width: 60%; }
+  100% { transform: translateX(200%); width: 30%; }
+}
+
+.animate-loading-bar {
+  animation: loadingBar 1.4s ease-in-out infinite;
+}
+

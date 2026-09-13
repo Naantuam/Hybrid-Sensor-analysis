@@ -1,6 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 
-export default function LiveConsole({ liveLogs }) {
+function LiveConsole({ liveLogs }) {
   const containerRef = useRef(null);
 
   useEffect(() => {
@@ -45,3 +45,5 @@ export default function LiveConsole({ liveLogs }) {
     </div>
   );
 }
+
+export default React.memo(LiveConsole);

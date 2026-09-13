@@ -118,7 +118,7 @@ const OS_INFRA_EXEMPTIONS = [
   }
 ];
 
-export default function ThreatDrawer({ drawerOpen, setDrawerOpen, selectedThreat, getThreatColorClass, selectedSession }) {
+function ThreatDrawer({ drawerOpen, setDrawerOpen, selectedThreat, getThreatColorClass, selectedSession }) {
   if (!drawerOpen) return null;
 
   const isBenign = selectedThreat?.threat_level === 'BENIGN';
@@ -409,3 +409,5 @@ export default function ThreatDrawer({ drawerOpen, setDrawerOpen, selectedThreat
     </>
   );
 }
+
+export default React.memo(ThreatDrawer);
