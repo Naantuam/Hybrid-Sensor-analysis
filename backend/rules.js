@@ -95,10 +95,10 @@ function getAppCategory(pkgName) {
 
 const RULES = {
     // 1. Collection
-    COLLECTION_LOW_FREQ:  { id: "COLLECTION_LOW_FREQ",  points: 5,  description: "App polls any sensor at low frequency (<=20Hz)", tactic: "Collection", mitre: "T1636" },
-    COLLECTION_HIGH_FREQ: { id: "COLLECTION_HIGH_FREQ", points: 20, description: "App polls motion/light sensors at ultra-high frequency (>100Hz)", tactic: "Collection", mitre: "T1429" },
-    COLLECTION_MIC:       { id: "COLLECTION_MIC",       points: 20, description: "Microphone active", tactic: "Collection", mitre: "T1430" },
-    COLLECTION_CAMERA:    { id: "COLLECTION_CAMERA",    points: 20, description: "Camera active", tactic: "Collection", mitre: "T1125" },
+    COLLECTION_LOW_FREQ:  { id: "COLLECTION_LOW_FREQ",  points: 5,  description: "App polls any sensor at low frequency (<=20Hz)", tactic: "Collection", mitre: "N/A" },
+    COLLECTION_HIGH_FREQ: { id: "COLLECTION_HIGH_FREQ", points: 20, description: "App polls motion/light sensors at ultra-high frequency (>100Hz)", tactic: "Collection", mitre: "T1417.001" },
+    COLLECTION_MIC:       { id: "COLLECTION_MIC",       points: 20, description: "Microphone active", tactic: "Collection", mitre: "T1429" },
+    COLLECTION_CAMERA:    { id: "COLLECTION_CAMERA",    points: 20, description: "Camera active", tactic: "Collection", mitre: "T1512" },
 
     // 2. Context State
     STATE_FOREGROUND:     { id: "STATE_FOREGROUND",     points: 0,  description: "Hardware access in foreground (Authorised)", tactic: "Context" },
@@ -107,19 +107,19 @@ const RULES = {
     CONTEXT_BG_VIOLATION: { id: "CONTEXT_BG_VIOLATION", points: 50, description: "Critical: High-Value Target accessed in background", tactic: "Context" },
 
     // 3. Discovery
-    DISCOVERY_FUSION:     { id: "DISCOVERY_FUSION",     points: 20, description: "Simulating multiple zero-permission sensor reads simultaneously", tactic: "Discovery", mitre: "T1427" },
-    DISCOVERY_BLE:        { id: "DISCOVERY_BLE",        points: 15, description: "Bluetooth scan active", tactic: "Discovery", mitre: "T1636" },
-    DISCOVERY_GPS:        { id: "DISCOVERY_GPS",        points: 15, description: "GPS location active", tactic: "Discovery", mitre: "T1636" },
+    DISCOVERY_FUSION:     { id: "DISCOVERY_FUSION",     points: 20, description: "Simulating multiple zero-permission sensor reads simultaneously", tactic: "Discovery", mitre: "T1426" },
+    DISCOVERY_BLE:        { id: "DISCOVERY_BLE",        points: 15, description: "Bluetooth scan active", tactic: "Discovery", mitre: "T1430" },
+    DISCOVERY_GPS:        { id: "DISCOVERY_GPS",        points: 15, description: "GPS location active", tactic: "Discovery", mitre: "T1430" },
 
     // 4. Exfiltration
-    EXFIL_STAGING:        { id: "EXFIL_STAGING",        points: 15, description: "Telemetry volume indicates large local JSON buffer write operations", tactic: "Exfiltration", mitre: "T1430" },
-    EXFIL_IMMEDIATE:      { id: "EXFIL_IMMEDIATE",      points: 40, description: "Immediate telemetry exfiltration upon network discovery", tactic: "Exfiltration", mitre: "T1041" },
+    EXFIL_STAGING:        { id: "EXFIL_STAGING",        points: 15, description: "Telemetry volume indicates large local JSON buffer write operations", tactic: "Exfiltration", mitre: "T1533" },
+    EXFIL_IMMEDIATE:      { id: "EXFIL_IMMEDIATE",      points: 40, description: "Immediate telemetry exfiltration upon network discovery", tactic: "Exfiltration", mitre: "T1646" },
 
     // 5. Defense Evasion
-    EVASION_LOG_DELETE:        { id: "EVASION_LOG_DELETE",        points: 30, description: "Indicator removal on host (log/file deletion)", tactic: "Defense Evasion", mitre: "T1403" },
-    EVASION_ACCESSIBILITY:     { id: "EVASION_ACCESSIBILITY",     points: 15, description: "Accessibility Services active for non-system packages", tactic: "Defense Evasion", mitre: "T1406" },
-    EVASION_BIOMETRIC:         { id: "EVASION_BIOMETRIC",         points: 10, description: "Biometric authentication bypass/abuse", tactic: "Defense Evasion", mitre: "T1406" },
-    EVASION_STATE_DISCREPANCY: { id: "EVASION_STATE_DISCREPANCY", points: 20, description: "App-declared state (Foreground) mismatches physical display status (OFF)", tactic: "Defense Evasion", mitre: "T1036" },
+    EVASION_LOG_DELETE:        { id: "EVASION_LOG_DELETE",        points: 30, description: "Indicator removal on host (log/file deletion)", tactic: "Defense Evasion", mitre: "T1630" },
+    EVASION_ACCESSIBILITY:     { id: "EVASION_ACCESSIBILITY",     points: 15, description: "Accessibility Services active for non-system packages", tactic: "Defense Evasion", mitre: "T1453" },
+    EVASION_BIOMETRIC:         { id: "EVASION_BIOMETRIC",         points: 10, description: "Biometric authentication bypass/abuse", tactic: "Defense Evasion", mitre: "N/A" },
+    EVASION_STATE_DISCREPANCY: { id: "EVASION_STATE_DISCREPANCY", points: 20, description: "App-declared state (Foreground) mismatches physical display status (OFF)", tactic: "Defense Evasion", mitre: "T1655" },
 
     // ── NEW: Technique 1 — Trust Tier Modifiers ───────────────────────────────
     TRUST_OS_INFRA:   { id: "TRUST_OS_INFRA",   points: -50, description: "OS infrastructure. Background sensor access is architecturally expected.", tactic: "Trust" },
@@ -131,12 +131,12 @@ const RULES = {
     COHERENCE_MISMATCH: { id: "COHERENCE_MISMATCH", points: 15,  description: "Sensor access is incoherent with app category (e.g. finance app accessing microphone).", tactic: "Coherence" },
 
     // ── NEW: Technique 3 — Multi-Sensor Correlation ───────────────────────────
-    CORRELATION_AV_SYNC:    { id: "CORRELATION_AV_SYNC",    points: 35, description: "Camera and Microphone active simultaneously — AV capture pattern.", tactic: "Correlation", mitre: "T1512" },
-    CORRELATION_TRACK_TRIO: { id: "CORRELATION_TRACK_TRIO", points: 50, description: "Camera + Microphone + Location active simultaneously — full surveillance profile.", tactic: "Correlation", mitre: "T1430" },
-    CORRELATION_NET_SENSOR: { id: "CORRELATION_NET_SENSOR", points: 25, description: "Sensor collection concurrent with active exfiltration channel.", tactic: "Correlation", mitre: "T1041" },
+    CORRELATION_AV_SYNC:    { id: "CORRELATION_AV_SYNC",    points: 35, description: "Camera and Microphone active simultaneously — AV capture pattern.", tactic: "Correlation", mitre: "T1429/T1512" },
+    CORRELATION_TRACK_TRIO: { id: "CORRELATION_TRACK_TRIO", points: 50, description: "Camera + Microphone + Location active simultaneously — full surveillance profile.", tactic: "Correlation", mitre: "T1429/T1512/T1430" },
+    CORRELATION_NET_SENSOR: { id: "CORRELATION_NET_SENSOR", points: 25, description: "Sensor collection concurrent with active exfiltration channel.", tactic: "Correlation", mitre: "T1646" },
 
     // ── NEW: Technique 4 — Origin Risk ───────────────────────────────────────
-    ORIGIN_SIDELOADED: { id: "ORIGIN_SIDELOADED", points: 20, description: "Package not installed from Play Store — elevated risk origin.", tactic: "Origin", mitre: "T1476" }
+    ORIGIN_SIDELOADED: { id: "ORIGIN_SIDELOADED", points: 20, description: "Package not installed from Play Store — elevated risk origin.", tactic: "Origin", mitre: "N/A" }
 };
 
 function evaluatePacket(packet, systemContext = {}) {

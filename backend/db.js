@@ -77,6 +77,26 @@ function invalidateCache(prefix = null) {
 }
 
 /**
+ * Loads the committed demo telemetry into an empty SQLite database (e.g. a fresh
+ * Railway container). Set SEED_DEMO_DATA=false to start with an empty database.
+ */
+function seedDemoData() {
+    const seedPath = path.join(__dirname, 'seed', 'demo_seed.sql');
+    if (process.env.SEED_DEMO_DATA === 'false' || !fs.existsSync(seedPath)) return;
+
+    const { count } = localDb.prepare("SELECT COUNT(*) AS count FROM sessions").get();
+    if (count > 0) return;
+
+    try {
+        localDb.exec(fs.readFileSync(seedPath, 'utf8'));
+        console.log('[+] Empty database seeded with demo telemetry.');
+    } catch (err) {
+        try { localDb.exec('ROLLBACK;'); } catch (e) {}
+        console.error('[!] Demo seed failed:', err.message);
+    }
+}
+
+/**
  * Initializes database schemas
  */
 async function initDatabase() {
@@ -135,6 +155,8 @@ async function initDatabase() {
         CREATE INDEX IF NOT EXISTS idx_threat_alerts_timestamp ON threat_alerts(timestamp DESC);
         CREATE INDEX IF NOT EXISTS idx_threat_alerts_level ON threat_alerts(threat_level);
     `);
+
+    seedDemoData();
 
     // 2. Initialize remote PG tables (if config string is available)
     if (connectionString) {

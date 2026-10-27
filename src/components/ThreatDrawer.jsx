@@ -3,16 +3,16 @@ import { Activity, X, Database, ExternalLink, ShieldCheck } from 'lucide-react';
 
 const ACADEMIC_DESCRIPTIONS = {
   COLLECTION_MIC: {
-    mitre: "T1430",
-    title: "Access Device Sensors: Microphone",
+    mitre: "T1429",
+    title: "Audio Capture",
     tactic: "Collection",
-    desc: "The application has initiated an active microphone recording handler. In mobile forensics, background or unauthorized audio recording is classified under MITRE T1430. Adversaries abuse this technique to capture private conversations, ambient room acoustics, or voice authentication data without user awareness."
+    desc: "The application has initiated an active microphone recording handler. In mobile forensics, background or unauthorized audio recording is classified under MITRE T1429 (Audio Capture). Adversaries abuse this technique to capture private conversations, ambient room acoustics, or voice authentication data without user awareness."
   },
   COLLECTION_CAMERA: {
-    mitre: "T1125",
+    mitre: "T1512",
     title: "Video Capture",
     tactic: "Collection",
-    desc: "Active camera lens access detected. Mapped to MITRE T1125, visual data collection represents a critical vector for espionage. Background camera calls allow spyware to silently snap photos, capture video, or record screenshots of sensitive interfaces."
+    desc: "Active camera lens access detected. Mapped to MITRE T1512 (Video Capture), visual data collection represents a critical vector for espionage. Background camera calls allow spyware to silently snap photos, capture video, or record screenshots of sensitive interfaces."
   },
   STATE_BACKGROUND: {
     mitre: "N/A",
@@ -33,28 +33,28 @@ const ACADEMIC_DESCRIPTIONS = {
     desc: "A High-Value Target sensor (Microphone, Camera, or GPS) was queried while the application was running in the background. This is a critical security violation. Third-party packages should never request media resources without foreground visual components and notifications."
   },
   DISCOVERY_GPS: {
-    mitre: "T1636.001",
-    title: "Sensor Sampling: Location Tracking",
+    mitre: "T1430",
+    title: "Location Tracking",
     tactic: "Discovery",
-    desc: "Active GPS query executed. Mapped to MITRE T1636.001 (Sensor Sampling), location logging enables adversaries to construct full physical movements and user routines. Tracking spatial data without foreground UI context represents a covert reconnaissance pattern."
+    desc: "Active GPS query executed. Mapped to MITRE T1430 (Location Tracking), location logging enables adversaries to construct full physical movements and user routines. Tracking spatial data without foreground UI context represents a covert reconnaissance pattern."
   },
   DISCOVERY_BLE: {
-    mitre: "T1636.001",
-    title: "Sensor Sampling: RF Beacon Fingerprinting",
+    mitre: "T1430",
+    title: "Location Tracking: RF Beacon Fingerprinting",
     tactic: "Discovery",
-    desc: "Active Bluetooth Low Energy (BLE) scanning. Under MITRE T1636.001, scanning for nearby BLE beacons or devices is used by trackers to fingerprint the user's micro-location inside buildings or proximity to other assets, bypassing standard GPS permissions."
+    desc: "Active Bluetooth Low Energy (BLE) scanning. Under MITRE T1430 (Location Tracking), scanning for nearby BLE beacons or devices is used by trackers to fingerprint the user's micro-location inside buildings or proximity to other assets, bypassing standard GPS permissions."
   },
   EVASION_ACCESSIBILITY: {
-    mitre: "T1406",
+    mitre: "T1453",
     title: "Defense Evasion: Accessibility Services Abuse",
     tactic: "Defense Evasion",
-    desc: "A custom, non-system Accessibility Service is currently active. Under MITRE T1406, accessibility wrappers can read screen contents (keylogging), intercept passwords, click permissions dialogs automatically, and prevent user-initiated process termination."
+    desc: "A custom, non-system Accessibility Service is currently active. Under MITRE T1453 (Abuse Accessibility Features), accessibility wrappers can read screen contents (keylogging), intercept passwords, click permissions dialogs automatically, and prevent user-initiated process termination."
   },
   EVASION_STATE_DISCREPANCY: {
-    mitre: "T1036",
+    mitre: "T1655",
     title: "Defense Evasion: Process State Deception",
     tactic: "Defense Evasion",
-    desc: "An application declared a FOREGROUND running priority state to Android subsystems while the device's physical display was audited as OFF. Mapped to MITRE T1036 (Masquerading), this signature highlights processes abusing system-level exemptions or background services to collect user telemetry covertly while masquerading as user-authorized foreground tasks."
+    desc: "An application declared a FOREGROUND running priority state to Android subsystems while the device's physical display was audited as OFF. Mapped to MITRE T1655 (Masquerading), this signature highlights processes abusing system-level exemptions or background services to collect user telemetry covertly while masquerading as user-authorized foreground tasks."
   },
   TRUST_OS_INFRA: {
     mitre: "N/A",
@@ -84,7 +84,7 @@ const ACADEMIC_DESCRIPTIONS = {
     mitre: "T1512",
     title: "Multi-Sensor Correlation: AV Capture Pattern",
     tactic: "Correlation",
-    desc: "Camera and Microphone are active simultaneously. This compound access pattern, mapped to MITRE T1512, is a primary indicator of unauthorised audio-visual surveillance, commonly observed in spyware and stalkerware applications."
+    desc: "Camera and Microphone are active simultaneously. This compound access pattern, mapped to MITRE T1429 (Audio Capture) and T1512 (Video Capture), is a primary indicator of unauthorised audio-visual surveillance, commonly observed in spyware and stalkerware applications."
   },
   CORRELATION_TRACK_TRIO: {
     mitre: "T1430",
